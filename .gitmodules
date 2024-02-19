@@ -1,0 +1,3 @@
+[submodule "dep/jjyouLib"]
+	path = dep/jjyouLib
+	url = git@github.com:YJJfish/jjyouLib.git
