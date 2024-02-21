@@ -197,18 +197,18 @@ s72::Scene72::Ptr Engine::load(
 		if (type == "SCENE") {
 			s72::Scene::Ptr scene = std::reinterpret_pointer_cast<s72::Scene>(object);
 			for (const auto& rootIdx : obj["roots"]) {
-				if (int(rootIdx) > scene72.graph.size() || scene72.graph[int(rootIdx) - 1]->type != "NODE") {
+				if (static_cast<int>(rootIdx) <= 0 || static_cast<int>(rootIdx) > scene72.graph.size() || scene72.graph[static_cast<int>(rootIdx) - 1]->type != "NODE") {
 					this->destroy(scene72);
-					throw std::runtime_error("Scene\'s roots reference " + std::to_string(int(rootIdx)) + " whose type is not node.");
+					throw std::runtime_error("Scene\'s roots reference " + std::to_string(static_cast<int>(rootIdx)) + " whose type is not node.");
 				}
-				scene->roots.push_back(std::reinterpret_pointer_cast<s72::Node>(scene72.graph[int(rootIdx) - 1]));
+				scene->roots.push_back(std::reinterpret_pointer_cast<s72::Node>(scene72.graph[static_cast<int>(rootIdx) - 1]));
 			}
 		}
 		else if (type == "NODE") {
 			s72::Node::Ptr node = std::reinterpret_pointer_cast<s72::Node>(object);
 			if (auto cameraIter = obj.find("camera"); cameraIter != obj.end()) {
 				int cameraIdx(cameraIter.value());
-				if (cameraIdx > scene72.graph.size() || scene72.graph[cameraIdx - 1]->type != "CAMERA") {
+				if (cameraIdx <= 0 || cameraIdx > scene72.graph.size() || scene72.graph[cameraIdx - 1]->type != "CAMERA") {
 					this->destroy(scene72);
 					throw std::runtime_error("Node" + std::to_string(node->idx) + "\'s camera references " + std::to_string(cameraIdx) + " whose type is not camera.");
 				}
@@ -216,7 +216,7 @@ s72::Scene72::Ptr Engine::load(
 			}
 			if (auto meshIter = obj.find("mesh"); meshIter != obj.end()) {
 				int meshIdx(meshIter.value());
-				if (meshIdx > scene72.graph.size() || scene72.graph[meshIdx - 1]->type != "MESH") {
+				if (meshIdx <= 0 || meshIdx > scene72.graph.size() || scene72.graph[meshIdx - 1]->type != "MESH") {
 					this->destroy(scene72);
 					throw std::runtime_error("Node" + std::to_string(node->idx) + "\'s mesh references " + std::to_string(meshIdx) + " whose type is not mesh.");
 				}
@@ -225,11 +225,11 @@ s72::Scene72::Ptr Engine::load(
 			if (auto childrenIter = obj.find("children"); childrenIter != obj.end()) {
 				const auto& children = childrenIter.value();
 				for (const auto& childIdx : children) {
-					if (int(childIdx) > scene72.graph.size() || scene72.graph[int(childIdx) - 1]->type != "NODE") {
+					if (static_cast<int>(childIdx) <= 0 || static_cast<int>(childIdx) > scene72.graph.size() || scene72.graph[static_cast<int>(childIdx) - 1]->type != "NODE") {
 						this->destroy(scene72);
-						throw std::runtime_error("Node" + std::to_string(node->idx) + "\'s children reference " + std::to_string(int(childIdx)) + " whose type is not node.");
+						throw std::runtime_error("Node" + std::to_string(node->idx) + "\'s children reference " + std::to_string(static_cast<int>(childIdx)) + " whose type is not node.");
 					}
-					node->children.push_back(std::reinterpret_pointer_cast<s72::Node>(scene72.graph[int(childIdx) - 1]));
+					node->children.push_back(std::reinterpret_pointer_cast<s72::Node>(scene72.graph[static_cast<int>(childIdx) - 1]));
 				}
 			}
 		}
@@ -240,7 +240,7 @@ s72::Scene72::Ptr Engine::load(
 		else if (type == "DRIVER") {
 			s72::Driver::Ptr driver = std::reinterpret_pointer_cast<s72::Driver>(object);
 			int nodeIdx(obj["node"]);
-			if (nodeIdx > scene72.graph.size() || scene72.graph[nodeIdx - 1]->type != "NODE") {
+			if (nodeIdx <= 0 || nodeIdx > scene72.graph.size() || scene72.graph[nodeIdx - 1]->type != "NODE") {
 				this->destroy(scene72);
 				throw std::runtime_error("Driver" + std::to_string(driver->idx) + "\'s node references " + std::to_string(nodeIdx) + " whose type is not node.");
 			}
