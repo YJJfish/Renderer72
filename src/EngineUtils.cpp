@@ -36,9 +36,10 @@ std::pair<VkImage, jjyou::vk::Memory> Engine::createImage(
 	VkFormat format,
 	VkImageTiling tiling,
 	VkImageUsageFlags usage,
-	const std::vector<std::uint32_t>& queueFamilyIndices,
+	const std::set<std::uint32_t>& queueFamilyIndices,
 	VkMemoryPropertyFlags properties
 ) {
+	std::vector<std::uint32_t> _queueFamilyIndices(queueFamilyIndices.begin(), queueFamilyIndices.end());
 	VkImageCreateInfo imageInfo{
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 		.pNext = nullptr,
@@ -55,9 +56,9 @@ std::pair<VkImage, jjyou::vk::Memory> Engine::createImage(
 		.samples = VK_SAMPLE_COUNT_1_BIT,
 		.tiling = tiling,
 		.usage = usage,
-		.sharingMode = (queueFamilyIndices.size() >= 2) ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
-		.queueFamilyIndexCount = static_cast<std::uint32_t>(queueFamilyIndices.size()),
-		.pQueueFamilyIndices = queueFamilyIndices.data(),
+		.sharingMode = (_queueFamilyIndices.size() >= 2) ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+		.queueFamilyIndexCount = static_cast<std::uint32_t>(_queueFamilyIndices.size()),
+		.pQueueFamilyIndices = _queueFamilyIndices.data(),
 		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
 	};
 	VkImage image;
@@ -79,18 +80,19 @@ std::pair<VkImage, jjyou::vk::Memory> Engine::createImage(
 std::pair<VkBuffer, jjyou::vk::Memory> Engine::createBuffer(
 	VkDeviceSize size,
 	VkBufferUsageFlags usage,
-	const std::vector<std::uint32_t>& queueFamilyIndices,
+	const std::set<std::uint32_t>& queueFamilyIndices,
 	VkMemoryPropertyFlags properties
 ) {
+	std::vector<std::uint32_t> _queueFamilyIndices(queueFamilyIndices.begin(), queueFamilyIndices.end());
 	VkBufferCreateInfo bufferInfo{
 		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 		.pNext = nullptr,
 		.flags = 0,
 		.size = size,
 		.usage = usage,
-		.sharingMode = (queueFamilyIndices.size() >= 2) ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
-		.queueFamilyIndexCount = static_cast<std::uint32_t>(queueFamilyIndices.size()),
-		.pQueueFamilyIndices = queueFamilyIndices.data()
+		.sharingMode = (_queueFamilyIndices.size() >= 2) ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+		.queueFamilyIndexCount = static_cast<std::uint32_t>(_queueFamilyIndices.size()),
+		.pQueueFamilyIndices = _queueFamilyIndices.data()
 	};
 	VkBuffer buffer;
 	JJYOU_VK_UTILS_CHECK(vkCreateBuffer(this->device.get(), &bufferInfo, nullptr, &buffer));

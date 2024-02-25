@@ -10,7 +10,79 @@
 #include "Scene72.hpp"
 #include "HostImage.hpp"
 #include "EventFile.hpp"
+
+#include <stb/stb_image.h>
 int main(int argc, char* argv[]) {
+	/*auto writeVertex = [&](
+		std::ostream& out,
+		float x, float y, float z,
+		float nx, float ny, float nz,
+		float tx, float ty, float tz, float tw,
+		float u, float v,
+		unsigned char r, unsigned char g, unsigned char b, unsigned char a
+		) {
+			out.write(reinterpret_cast<const char*>(&x), sizeof(float));
+			out.write(reinterpret_cast<const char*>(&y), sizeof(float));
+			out.write(reinterpret_cast<const char*>(&z), sizeof(float));
+			out.write(reinterpret_cast<const char*>(&nx), sizeof(float));
+			out.write(reinterpret_cast<const char*>(&ny), sizeof(float));
+			out.write(reinterpret_cast<const char*>(&nz), sizeof(float));
+			out.write(reinterpret_cast<const char*>(&tx), sizeof(float));
+			out.write(reinterpret_cast<const char*>(&ty), sizeof(float));
+			out.write(reinterpret_cast<const char*>(&tz), sizeof(float));
+			out.write(reinterpret_cast<const char*>(&tw), sizeof(float));
+			out.write(reinterpret_cast<const char*>(&u), sizeof(float));
+			out.write(reinterpret_cast<const char*>(&v), sizeof(float));
+			out.write(reinterpret_cast<const char*>(&r), sizeof(unsigned char));
+			out.write(reinterpret_cast<const char*>(&g), sizeof(unsigned char));
+			out.write(reinterpret_cast<const char*>(&b), sizeof(unsigned char));
+			out.write(reinterpret_cast<const char*>(&a), sizeof(unsigned char));
+		};
+	std::ofstream fout("square.b72", std::ios::out | std::ios::binary);
+	auto writeV1 = [&]() {
+		writeVertex(
+			fout,
+			-1.0f, 0.0f, -1.0f,
+			0.0f, -1.0f, 0.0f,
+			1.0f, 0.0f, 0.0f, 1.0f,
+			0.0f, 1.0f,
+			255, 255, 255, 255
+		);
+		};
+	auto writeV2 = [&]() {
+		writeVertex(
+			fout,
+			1.0f, 0.0f, -1.0f,
+			0.0f, -1.0f, 0.0f,
+			1.0f, 0.0f, 0.0f, 1.0f,
+			1.0f, 1.0f,
+			255, 255, 255, 255
+		);
+		};
+	auto writeV3 = [&]() {
+		writeVertex(
+			fout,
+			1.0f, 0.0f, 1.0f,
+			0.0f, -1.0f, 0.0f,
+			1.0f, 0.0f, 0.0f, 1.0f,
+			1.0f, 0.0f,
+			255, 255, 255, 255
+		);
+		};
+	auto writeV4 = [&]() {
+		writeVertex(
+			fout,
+			-1.0f, 0.0f, 1.0f,
+			0.0f, -1.0f, 0.0f,
+			1.0f, 0.0f, 0.0f, 1.0f,
+			0.0f, 0.0f,
+			255, 255, 255, 255
+		);
+		};
+	writeV1(); writeV2(); writeV3();
+	writeV1(); writeV3(); writeV4();
+	fout.close();
+	exit(0);*/
 	try {
 		// Parse arguments.
 		TinyArgParser argParser;

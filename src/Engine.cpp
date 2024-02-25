@@ -444,67 +444,8 @@ void Engine::handleFramebufferResizing(void) {
 }
 
 void Engine::setScene(s72::Scene72::Ptr pScene72) {
-	// free previous dynamic uniform buffer memory
-	if (this->pScene72 != nullptr) {
-		for (size_t i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; i++) {
-			this->allocator.unmap(this->frameData[i].objectLevelUniformBufferMemory);
-			vkDestroyBuffer(this->device.get(), this->frameData[i].objectLevelUniformBuffer, nullptr);
-			this->allocator.free(this->frameData[i].objectLevelUniformBufferMemory);
-		}
-	}
 	pScene72->reset();
 	this->pScene72 = pScene72;
 	this->currPlayTime = pScene72->minTime;
 	this->resetClockTime();
-	// compute instance count
-	std::size_t instanceCount = 0;
-	std::function<void(s72::Node::Ptr)> traverseScene72;
-	traverseScene72 = [&](s72::Node::Ptr node) -> void {
-		if (!node->mesh.expired()) {
-			instanceCount++;
-		}
-		for (s72::Node::WeakPtr child : node->children)
-			traverseScene72(child.lock());
-		};
-	for (s72::Node::WeakPtr node : this->pScene72->scene->roots) {
-		traverseScene72(node.lock());
-	}
-	// allocate dynamic uniform buffer for model and normal matrices
-	VkDeviceSize dynamicBufferOffset = sizeof(Engine::ObjectLevelUniform);
-	VkDeviceSize minAlignment = this->physicalDevice.deviceProperties().limits.minUniformBufferOffsetAlignment;
-	if (minAlignment > 0)
-		dynamicBufferOffset = (dynamicBufferOffset + minAlignment - 1) & ~(minAlignment - 1);
-	VkDeviceSize bufferSize = instanceCount * dynamicBufferOffset;
-	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-		std::tie(this->frameData[i].objectLevelUniformBuffer, this->frameData[i].objectLevelUniformBufferMemory) =
-			this->createBuffer(
-				bufferSize,
-				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-				{ *this->physicalDevice.graphicsQueueFamily() },
-				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-			);
-		this->allocator.map(this->frameData[i].objectLevelUniformBufferMemory);
-	}
-	// update descriptors
-	for (size_t i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; i++) {
-		VkDescriptorBufferInfo bufferInfo{
-			.buffer = this->frameData[i].objectLevelUniformBuffer,
-			.offset = 0,
-			.range = sizeof(Engine::ObjectLevelUniform)
-		};
-		VkWriteDescriptorSet descriptorWrite{
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.pNext = nullptr,
-			.dstSet = this->frameData[i].objectLevelUniformDescriptorSet,
-			.dstBinding = 1,
-			.dstArrayElement = 0,
-			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-			.pImageInfo = nullptr,
-			.pBufferInfo = &bufferInfo,
-			.pTexelBufferView = nullptr
-		};
-		std::vector<VkWriteDescriptorSet> descriptorWrites = { descriptorWrite };
-		vkUpdateDescriptorSets(this->device.get(), static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
-	}
 }

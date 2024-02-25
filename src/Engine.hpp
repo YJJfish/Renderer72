@@ -6,6 +6,7 @@
 
 #include <iostream>
 #include <vector>
+#include <set>
 #include <optional>
 #include <utility>
 #include <tuple>
@@ -88,9 +89,6 @@ private:
 	};
 
 	struct FrameData {
-		VkBuffer viewLevelUniformBuffer, objectLevelUniformBuffer = nullptr;
-		jjyou::vk::Memory viewLevelUniformBufferMemory, objectLevelUniformBufferMemory;
-		VkDescriptorSet viewLevelUniformDescriptorSet = nullptr, objectLevelUniformDescriptorSet = nullptr;
 		VkCommandBuffer graphicsCommandBuffer = nullptr;
 		VkSemaphore imageAvailableSemaphore = nullptr;
 		VkSemaphore renderFinishedSemaphore = nullptr;
@@ -181,8 +179,12 @@ public:
 
 	std::array<FrameData, Engine::MAX_FRAMES_IN_FLIGHT> frameData;
 
-	VkDescriptorSetLayout viewLevelUniformDescriptorSetLayout, objectLevelUniformDescriptorSetLayout;
-	VkDescriptorPool descriptorPool;
+	VkDescriptorSetLayout viewLevelUniformDescriptorSetLayout;
+	VkDescriptorSetLayout objectLevelUniformDescriptorSetLayout;
+	VkDescriptorSetLayout mirrorMaterialLevelUniformDescriptorSetLayout;
+	VkDescriptorSetLayout environmentMaterialLevelUniformDescriptorSetLayout;
+	VkDescriptorSetLayout lambertianMaterialLevelUniformDescriptorSetLayout;
+	VkDescriptorSetLayout pbrMaterialLevelUniformDescriptorSetLayout;
 
 	VkPipelineLayout pipelineLayout;
 	VkPipeline pipeline;
@@ -200,14 +202,14 @@ public:
 		VkFormat format,
 		VkImageTiling tiling,
 		VkImageUsageFlags usage,
-		const std::vector<std::uint32_t>& queueFamilyIndices,
+		const std::set<std::uint32_t>& queueFamilyIndices,
 		VkMemoryPropertyFlags properties
 	);
 
 	std::pair<VkBuffer, jjyou::vk::Memory> createBuffer(
 		VkDeviceSize size,
 		VkBufferUsageFlags usage,
-		const std::vector<std::uint32_t>& queueFamilyIndices,
+		const std::set<std::uint32_t>& queueFamilyIndices,
 		VkMemoryPropertyFlags properties
 	);
 

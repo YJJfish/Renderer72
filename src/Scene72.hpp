@@ -20,6 +20,13 @@ namespace s72 {
 	class Camera;
 	class PerspectiveCamera;
 	class OrthographicCamera;
+	class Material;
+	class SimpleMaterial;
+	class EnvironmentMaterial;
+	class MirrorMaterial;
+	class LambertianMaterial;
+	class PbrMaterial;
+	class Environment;
 	class Mesh;
 	class Node;
 	class Scene;
@@ -41,7 +48,7 @@ namespace s72 {
 		using Ptr = std::shared_ptr<Camera>;
 		using WeakPtr = std::weak_ptr<Camera>;
 		Camera(std::uint32_t idx, const std::string& name) : Object(idx, "CAMERA", name) {}
-		virtual ~Camera(void) {}
+		virtual ~Camera(void) override {}
 		virtual float getAspectRatio(void) const = 0;
 		virtual jjyou::glsl::mat4 getProjectionMatrix(void) const = 0;
 	};
@@ -105,6 +112,133 @@ namespace s72 {
 		float zFar;
 	};
 
+	class Material : public Object {
+	public:
+		using Ptr = std::shared_ptr<Material>;
+		using WeakPtr = std::weak_ptr<Material>;
+		Material(
+			std::uint32_t idx,
+			const std::string& name,
+			const std::string& materialType
+		) : Object(idx, "MATERIAL", name), materialType(materialType) {}
+		virtual ~Material(void) override {}
+		virtual std::uint32_t numTextures(void) const = 0;
+		virtual const jjyou::vk::Texture2D& texture(std::uint32_t idx) const = 0;
+		virtual jjyou::vk::Texture2D& texture(std::uint32_t idx) = 0;
+		std::string materialType;
+	};
+
+	class SimpleMaterial : public Material {
+	public:
+		using Ptr = std::shared_ptr<SimpleMaterial>;
+		using WeakPtr = std::weak_ptr<SimpleMaterial>;
+		SimpleMaterial(
+			std::uint32_t idx,
+			const std::string& name
+		) : Material(idx, name, "simple") {}
+		virtual ~SimpleMaterial(void) override {}
+		virtual std::uint32_t numTextures(void) const override { return 0; }
+		virtual const jjyou::vk::Texture2D& texture(std::uint32_t idx) const override { throw std::runtime_error("Simple material has no textures."); }
+		virtual jjyou::vk::Texture2D& texture(std::uint32_t idx) override { throw std::runtime_error("Simple material has no textures."); }
+	};
+
+	class EnvironmentMaterial : public Material {
+	public:
+		using Ptr = std::shared_ptr<EnvironmentMaterial>;
+		using WeakPtr = std::weak_ptr<EnvironmentMaterial>;
+		EnvironmentMaterial(
+			std::uint32_t idx,
+			const std::string& name,
+			jjyou::vk::Texture2D normalMap,
+			jjyou::vk::Texture2D displacementMap
+		) : Material(idx, name, "environment"), normalMap(normalMap), displacementMap(displacementMap) {}
+		virtual ~EnvironmentMaterial(void) override {}
+		virtual std::uint32_t numTextures(void) const override { return 2; }
+		virtual const jjyou::vk::Texture2D& texture(std::uint32_t idx) const override { switch (idx) { case 0:return this->normalMap; case 1:return this->displacementMap; default: throw std::runtime_error("Environment material has exactly 2 textures."); } }
+		virtual jjyou::vk::Texture2D& texture(std::uint32_t idx) override { switch (idx) { case 0:return this->normalMap; case 1:return this->displacementMap; default: throw std::runtime_error("Environment material has exactly 2 textures."); } }
+		jjyou::vk::Texture2D normalMap;
+		jjyou::vk::Texture2D displacementMap;
+	};
+
+	class MirrorMaterial : public Material {
+	public:
+		using Ptr = std::shared_ptr<MirrorMaterial>;
+		using WeakPtr = std::weak_ptr<MirrorMaterial>;
+		MirrorMaterial(
+			std::uint32_t idx,
+			const std::string& name,
+			jjyou::vk::Texture2D normalMap,
+			jjyou::vk::Texture2D displacementMap
+		) : Material(idx, name, "mirror"), normalMap(normalMap), displacementMap(displacementMap) {}
+		virtual ~MirrorMaterial(void) override {}
+		virtual std::uint32_t numTextures(void) const override { return 2; }
+		virtual const jjyou::vk::Texture2D& texture(std::uint32_t idx) const override { switch (idx) { case 0:return this->normalMap; case 1:return this->displacementMap; default: throw std::runtime_error("Mirror material has exactly 2 textures."); } }
+		virtual jjyou::vk::Texture2D& texture(std::uint32_t idx) override { switch (idx) { case 0:return this->normalMap; case 1:return this->displacementMap; default: throw std::runtime_error("Mirror material has exactly 2 textures."); } }
+		jjyou::vk::Texture2D normalMap;
+		jjyou::vk::Texture2D displacementMap;
+	};
+
+	class LambertianMaterial : public Material {
+	public:
+		using Ptr = std::shared_ptr<LambertianMaterial>;
+		using WeakPtr = std::weak_ptr<LambertianMaterial>;
+		LambertianMaterial(
+			std::uint32_t idx,
+			const std::string& name,
+			jjyou::vk::Texture2D normalMap,
+			jjyou::vk::Texture2D displacementMap,
+			jjyou::vk::Texture2D baseColor
+		) : Material(idx, name, "lambertian"), normalMap(normalMap), displacementMap(displacementMap), baseColor(baseColor) {}
+		virtual ~LambertianMaterial(void) override {}
+		virtual std::uint32_t numTextures(void) const override { return 3; }
+		virtual const jjyou::vk::Texture2D& texture(std::uint32_t idx) const override { switch (idx) { case 0:return this->normalMap; case 1:return this->displacementMap; case 2: return this->baseColor; default: throw std::runtime_error("Lambertian material has exactly 3 textures."); } }
+		virtual jjyou::vk::Texture2D& texture(std::uint32_t idx) override { switch (idx) { case 0:return this->normalMap; case 1:return this->displacementMap; case 2: return this->baseColor; default: throw std::runtime_error("Lambertian material has exactly 3 textures."); } }
+		jjyou::vk::Texture2D normalMap;
+		jjyou::vk::Texture2D displacementMap;
+		jjyou::vk::Texture2D baseColor;
+	};
+
+	class PbrMaterial : public Material {
+	public:
+		using Ptr = std::shared_ptr<PbrMaterial>;
+		using WeakPtr = std::weak_ptr<PbrMaterial>;
+		PbrMaterial(
+			std::uint32_t idx,
+			const std::string& name,
+			jjyou::vk::Texture2D normalMap,
+			jjyou::vk::Texture2D displacementMap,
+			jjyou::vk::Texture2D albedo,
+			jjyou::vk::Texture2D roughness,
+			jjyou::vk::Texture2D metalness
+		) : Material(idx, name, "pbr"), normalMap(normalMap), displacementMap(displacementMap), albedo(albedo), roughness(roughness), metalness(metalness) {}
+		virtual ~PbrMaterial(void) override {}
+		virtual std::uint32_t numTextures(void) const override { return 5; }
+		virtual const jjyou::vk::Texture2D& texture(std::uint32_t idx) const override { switch (idx) { case 0:return this->normalMap; case 1:return this->displacementMap; case 2: return this->albedo; case 3: return this->roughness; case 4: return this->metalness; default: throw std::runtime_error("Pbr material has exactly 5 textures."); } }
+		virtual jjyou::vk::Texture2D& texture(std::uint32_t idx) override { switch (idx) { case 0:return this->normalMap; case 1:return this->displacementMap; case 2: return this->albedo; case 3: return this->roughness; case 4: return this->metalness; default: throw std::runtime_error("Pbr material has exactly 5 textures."); } }
+		jjyou::vk::Texture2D normalMap;
+		jjyou::vk::Texture2D displacementMap;
+		jjyou::vk::Texture2D albedo;
+		jjyou::vk::Texture2D roughness;
+		jjyou::vk::Texture2D metalness;
+	};
+
+	class Environment : public Object {
+	public:
+		using Ptr = std::shared_ptr<Environment>;
+		using WeakPtr = std::weak_ptr<Environment>;
+		Environment(
+			std::uint32_t idx,
+			const std::string& name,
+			VkImage radiance,
+			VkImageView radianceImageView,
+			jjyou::vk::Memory radianceMemory
+		) : Object(idx, "ENVIRONMENT", name), radiance(radiance), radianceImageView(radianceImageView), radianceMemory(radianceMemory) {}
+		virtual ~Environment(void) override {}
+		VkImage radiance;
+		VkImageView radianceImageView;
+		jjyou::vk::Memory radianceMemory;
+	};
+
 	class Mesh : public Object {
 	public:
 		using Ptr = std::shared_ptr<Mesh>;
@@ -113,6 +247,7 @@ namespace s72 {
 		std::uint32_t count;
 		VkBuffer vertexBuffer;
 		jjyou::vk::Memory vertexBufferMemory;
+		Material::WeakPtr material;
 		BBox bbox;
 		Mesh(
 			std::uint32_t idx,
@@ -120,11 +255,12 @@ namespace s72 {
 			VkPrimitiveTopology topology,
 			std::uint32_t count,
 			VkBuffer vertexBuffer,
-			jjyou::vk::Memory vertexBufferMemory, 
+			jjyou::vk::Memory vertexBufferMemory,
+			Material::WeakPtr material,
 			const BBox& bbox
-		) : Object(idx, "MESH", name), topology(topology), count(count), vertexBuffer(vertexBuffer), vertexBufferMemory(vertexBufferMemory), bbox(bbox)
+		) : Object(idx, "MESH", name), topology(topology), count(count), vertexBuffer(vertexBuffer), vertexBufferMemory(vertexBufferMemory), material(material), bbox(bbox)
 		{}
-		virtual ~Mesh(void) {}
+		virtual ~Mesh(void) override {}
 	};
 
 	class Node : public Object {
@@ -137,6 +273,7 @@ namespace s72 {
 		std::vector<Node::WeakPtr> children;
 		Camera::WeakPtr camera;
 		Mesh::WeakPtr mesh;
+		Environment::WeakPtr environment;
 		std::array<std::weak_ptr<Driver>, 3> drivers;
 		Node(
 			std::uint32_t idx,
@@ -147,10 +284,11 @@ namespace s72 {
 			const std::vector<Node::WeakPtr>& children,
 			Camera::WeakPtr camera,
 			Mesh::WeakPtr mesh,
+			Environment::WeakPtr environment,
 			const std::array<std::weak_ptr<Driver>, 3>& drivers
-		) : Object(idx, "NODE", name), translation(translation), rotation(rotation), scale(scale), children(children), camera(camera), mesh(mesh), drivers(drivers)
+		) : Object(idx, "NODE", name), translation(translation), rotation(rotation), scale(scale), children(children), camera(camera), mesh(mesh), environment(environment), drivers(drivers)
 		{}
-		virtual ~Node(void) {}
+		virtual ~Node(void) override {}
 	};
 
 	class Scene : public Object {
@@ -163,7 +301,7 @@ namespace s72 {
 			const std::string& name,
 			const std::vector<Node::WeakPtr>& roots
 		) : Object(idx, "NODE", name), roots(roots) {}
-		virtual ~Scene(void) {}
+		virtual ~Scene(void) override {}
 	};
 	
 
@@ -197,7 +335,7 @@ namespace s72 {
 			Interpolation interpolation
 		) : Object(idx, "DRIVER", name), node(node), channel(channel), times(times), values(values), interpolation(interpolation)
 		{}
-		virtual ~Driver(void) {}
+		virtual ~Driver(void) override {}
 	};
 
 	class Scene72 {
@@ -208,6 +346,10 @@ namespace s72 {
 		std::unordered_map<std::string, Mesh::Ptr> meshes;
 		std::vector<Driver::Ptr> drivers;
 		Scene::Ptr scene;
+		Environment::Ptr environment;
+
+		SimpleMaterial::Ptr defaultMaterial;
+
 		std::vector<Object::Ptr> graph;
 		float minTime = 0.0f;
 		float maxTime = 0.0f;
@@ -235,6 +377,22 @@ namespace s72 {
 			jjyou::glsl::mat4 rootTransform,
 			const std::function<bool(s72::Node::Ptr, const jjyou::glsl::mat4&)>& visit
 		);
+
+		// Shader descriptors and uniforms
+		struct FrameDescriptorSets {
+			VkDescriptorSet viewLevelUniformDescriptorSet = nullptr;
+			VkBuffer viewLevelUniformBuffer = nullptr;
+			jjyou::vk::Memory viewLevelUniformBufferMemory{};
+
+			VkDescriptorSet objectLevelUniformDescriptorSet = nullptr;
+			VkBuffer objectLevelUniformBuffer = nullptr;
+			jjyou::vk::Memory objectLevelUniformBufferMemory{};
+
+			std::map<std::uint32_t, VkDescriptorSet> materialLevelUniformDescriptorSets{};
+		};
+		std::array<FrameDescriptorSets, Engine::MAX_FRAMES_IN_FLIGHT> frameDescriptorSets;
+		VkDescriptorPool descriptorPool;
+		
 
 	private:
 		bool _traverse(

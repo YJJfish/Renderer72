@@ -1,5 +1,6 @@
 #pragma once
 #define JJYOU_USE_VULKAN
+
 class TinyArgParser;
 class VirtualSwapchain;
 class BBox;

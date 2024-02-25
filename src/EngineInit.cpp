@@ -219,11 +219,12 @@ Engine::Engine(
 			.flags = 0,
 			.bindingCount = static_cast<uint32_t>(bindings.size()),
 			.pBindings = bindings.data()
-		}; JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(this->device.get(), &layoutInfo, nullptr, &this->viewLevelUniformDescriptorSetLayout));
+		};
+		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(this->device.get(), &layoutInfo, nullptr, &this->viewLevelUniformDescriptorSetLayout));
 	}
 	{
 		VkDescriptorSetLayoutBinding objectLevelUniformLayoutBinding{
-			.binding = 1,
+			.binding = 0,
 			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
 			.descriptorCount = 1,
 			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
@@ -239,96 +240,134 @@ Engine::Engine(
 		};
 		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(this->device.get(), &layoutInfo, nullptr, &this->objectLevelUniformDescriptorSetLayout));
 	}
-
-	// Create descriptor pool
 	{
-		VkDescriptorPoolSize uniformBufferPoolSize{
-			.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT
+		VkDescriptorSetLayoutBinding mirrorNormalMapSamplerBinding{
+			.binding = 0,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
 		};
-		VkDescriptorPoolSize uniformBufferDynamicPoolSize{
-			.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT
+		VkDescriptorSetLayoutBinding mirrorDisplacementMapSamplerBinding{
+			.binding = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
 		};
-		std::vector<VkDescriptorPoolSize> poolSizes = { uniformBufferPoolSize, uniformBufferDynamicPoolSize };
-		VkDescriptorPoolCreateInfo poolInfo{
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+		std::vector<VkDescriptorSetLayoutBinding> bindings = { mirrorNormalMapSamplerBinding, mirrorDisplacementMapSamplerBinding };
+		VkDescriptorSetLayoutCreateInfo layoutInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 			.pNext = nullptr,
 			.flags = 0,
-			.maxSets = static_cast<uint32_t>(2 * Engine::MAX_FRAMES_IN_FLIGHT),
-			.poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
-			.pPoolSizes = poolSizes.data()
+			.bindingCount = static_cast<uint32_t>(bindings.size()),
+			.pBindings = bindings.data()
 		};
-		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorPool(this->device.get(), &poolInfo, nullptr, &this->descriptorPool));
+		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(this->device.get(), &layoutInfo, nullptr, &this->mirrorMaterialLevelUniformDescriptorSetLayout));
 	}
-
-	// Create uniform buffers
 	{
-		VkDeviceSize bufferSize = sizeof(Engine::ViewLevelUniform);
-		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-			std::tie(this->frameData[i].viewLevelUniformBuffer, this->frameData[i].viewLevelUniformBufferMemory) =
-				this->createBuffer(
-					bufferSize,
-					VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-					{ *this->physicalDevice.graphicsQueueFamily() },
-					VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-				);
-			this->allocator.map(this->frameData[i].viewLevelUniformBufferMemory);
-		}
-	}
-
-	// Create descriptor sets
-	{
-		std::vector<VkDescriptorSetLayout> layouts(Engine::MAX_FRAMES_IN_FLIGHT, this->viewLevelUniformDescriptorSetLayout);
-		VkDescriptorSetAllocateInfo allocInfo{
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		VkDescriptorSetLayoutBinding environmentNormalMapSamplerBinding{
+			.binding = 0,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding environmentDisplacementMapSamplerBinding{
+			.binding = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		std::vector<VkDescriptorSetLayoutBinding> bindings = { environmentNormalMapSamplerBinding, environmentDisplacementMapSamplerBinding };
+		VkDescriptorSetLayoutCreateInfo layoutInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 			.pNext = nullptr,
-			.descriptorPool = this->descriptorPool,
-			.descriptorSetCount = static_cast<uint32_t>(layouts.size()),
-			.pSetLayouts = layouts.data()
+			.flags = 0,
+			.bindingCount = static_cast<uint32_t>(bindings.size()),
+			.pBindings = bindings.data()
 		};
-		std::array<VkDescriptorSet, Engine::MAX_FRAMES_IN_FLIGHT> viewLevelUniformDescriptorSets;
-		JJYOU_VK_UTILS_CHECK(vkAllocateDescriptorSets(this->device.get(), &allocInfo, viewLevelUniformDescriptorSets.data()));
-		for (size_t i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; i++) {
-			this->frameData[i].viewLevelUniformDescriptorSet = viewLevelUniformDescriptorSets[i];
-			VkDescriptorBufferInfo bufferInfo{
-				.buffer = this->frameData[i].viewLevelUniformBuffer,
-				.offset = 0,
-				.range = sizeof(Engine::ViewLevelUniform)
-			};
-			VkWriteDescriptorSet descriptorWrite{
-				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				.pNext = nullptr,
-				.dstSet = this->frameData[i].viewLevelUniformDescriptorSet,
-				.dstBinding = 0,
-				.dstArrayElement = 0,
-				.descriptorCount = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-				.pImageInfo = nullptr,
-				.pBufferInfo = &bufferInfo,
-				.pTexelBufferView = nullptr
-			};
-			std::vector<VkWriteDescriptorSet> descriptorWrites = { descriptorWrite };
-			vkUpdateDescriptorSets(this->device.get(), static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
-		}
+		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(this->device.get(), &layoutInfo, nullptr, &this->environmentMaterialLevelUniformDescriptorSetLayout));
 	}
 	{
-		std::vector<VkDescriptorSetLayout> layouts(Engine::MAX_FRAMES_IN_FLIGHT, this->objectLevelUniformDescriptorSetLayout);
-		VkDescriptorSetAllocateInfo allocInfo{
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-			.pNext = nullptr,
-			.descriptorPool = this->descriptorPool,
-			.descriptorSetCount = static_cast<uint32_t>(layouts.size()),
-			.pSetLayouts = layouts.data()
+		VkDescriptorSetLayoutBinding lambertianNormalMapSamplerBinding{
+			.binding = 0,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
 		};
-		std::array<VkDescriptorSet, Engine::MAX_FRAMES_IN_FLIGHT> objectLevelUniformDescriptorSets;
-		JJYOU_VK_UTILS_CHECK(vkAllocateDescriptorSets(this->device.get(), &allocInfo, objectLevelUniformDescriptorSets.data()));
-		for (size_t i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; i++) {
-			this->frameData[i].objectLevelUniformDescriptorSet = objectLevelUniformDescriptorSets[i];
-			// Not update descriptor set until the user set a scene and the engine knows the dynamic uniform buffer size
-		}
+		VkDescriptorSetLayoutBinding lambertianDisplacementMapSamplerBinding{
+			.binding = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding lambertianBaseColorSamplerBinding{
+			.binding = 2,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		std::vector<VkDescriptorSetLayoutBinding> bindings = { lambertianNormalMapSamplerBinding, lambertianDisplacementMapSamplerBinding, lambertianBaseColorSamplerBinding };
+		VkDescriptorSetLayoutCreateInfo layoutInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.pNext = nullptr,
+			.flags = 0,
+			.bindingCount = static_cast<uint32_t>(bindings.size()),
+			.pBindings = bindings.data()
+		};
+		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(this->device.get(), &layoutInfo, nullptr, &this->lambertianMaterialLevelUniformDescriptorSetLayout));
 	}
-
+	{
+		VkDescriptorSetLayoutBinding pbrNormalMapSamplerBinding{
+			.binding = 0,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding pbrDisplacementMapSamplerBinding{
+			.binding = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding pbrAlbedoSamplerBinding{
+			.binding = 2,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding pbrRoughnessSamplerBinding{
+			.binding = 3,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding pbrMetalnessSamplerBinding{
+			.binding = 4,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		std::vector<VkDescriptorSetLayoutBinding> bindings = { pbrNormalMapSamplerBinding, pbrDisplacementMapSamplerBinding, pbrAlbedoSamplerBinding, pbrRoughnessSamplerBinding, pbrMetalnessSamplerBinding };
+		VkDescriptorSetLayoutCreateInfo layoutInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.pNext = nullptr,
+			.flags = 0,
+			.bindingCount = static_cast<uint32_t>(bindings.size()),
+			.pBindings = bindings.data()
+		};
+		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(this->device.get(), &layoutInfo, nullptr, &this->pbrMaterialLevelUniformDescriptorSetLayout));
+	}
 	// Create sync objects
 	{
 		VkSemaphoreCreateInfo semaphoreInfo{
@@ -612,25 +651,6 @@ Engine::~Engine(void) {
 		vkDestroySemaphore(this->device.get(), this->frameData[i].renderFinishedSemaphore, nullptr);
 		vkDestroyFence(this->device.get(), this->frameData[i].inFlightFence, nullptr);
 	}
-
-	// Descriptor sets will be destroyed along with the descriptor pool
-
-	// Destory the uniform buffers
-	for (size_t i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; i++) {
-		this->allocator.unmap(this->frameData[i].viewLevelUniformBufferMemory);
-		vkDestroyBuffer(this->device.get(), this->frameData[i].viewLevelUniformBuffer, nullptr);
-		this->allocator.free(this->frameData[i].viewLevelUniformBufferMemory);
-	}
-	if (this->pScene72 != nullptr) {
-		for (size_t i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; i++) {
-			this->allocator.unmap(this->frameData[i].objectLevelUniformBufferMemory);
-			vkDestroyBuffer(this->device.get(), this->frameData[i].objectLevelUniformBuffer, nullptr);
-			this->allocator.free(this->frameData[i].objectLevelUniformBufferMemory);
-		}
-	}
-
-	// Destroy descriptor pool
-	vkDestroyDescriptorPool(this->device.get(), this->descriptorPool, nullptr);
 
 	// Destroy descriptor layout
 	vkDestroyDescriptorSetLayout(this->device.get(), this->viewLevelUniformDescriptorSetLayout, nullptr);
