@@ -12,10 +12,13 @@ layout(location = 3) in vec2 inTexCoord;
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    vec3 normal = normalize(inNormal);
-    vec3 tangent = normalize(inTangent.xyz);
-    vec3 bitangent = cross(normal, tangent);
+    vec3 N = normalize(inNormal);
+    vec3 T = normalize(inTangent.xyz);
+    vec3 B = cross(N, T);
     if (inTangent.w < 0.0)
-        bitangent = -bitangent;
-    outColor = vec4(texture(baseColorSampler, inTexCoord), 1.0);
+        B = -B;
+    mat3 TBN = mat3(T, B, N);
+    vec3 normal = TBN * (texture(normalMapSampler, inTexCoord).xyz * 2.0 - 1.0);
+    vec3 light = mix(vec3(0,0,0), vec3(1,1,1), max(dot(normal, vec3(0, 0, -1)), 0.0) * 0.5 + 0.5);
+    outColor = vec4(light * texture(baseColorSampler, inTexCoord).rgb, 1.0);
 }

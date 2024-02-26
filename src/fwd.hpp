@@ -10,6 +10,20 @@ class EventFile;
 class HostImage;
 namespace s72 {
 	class Scene72;
-	enum class LoadResult;
+	class Object;
+	class Camera;
+	class PerspectiveCamera;
+	class OrthographicCamera;
+	class Material;
+	class SimpleMaterial;
+	class EnvironmentMaterial;
+	class MirrorMaterial;
+	class LambertianMaterial;
+	class PbrMaterial;
+	class Environment;
+	class Mesh;
+	class Node;
+	class Scene;
+	class Driver;
 }
 

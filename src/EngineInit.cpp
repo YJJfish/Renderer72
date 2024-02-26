@@ -368,6 +368,7 @@ Engine::Engine(
 		};
 		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(this->device.get(), &layoutInfo, nullptr, &this->pbrMaterialLevelUniformDescriptorSetLayout));
 	}
+
 	// Create sync objects
 	{
 		VkSemaphoreCreateInfo semaphoreInfo{
@@ -387,74 +388,90 @@ Engine::Engine(
 		}
 	}
 
+	// Create pipeline layout
+	{
+		std::vector<VkDescriptorSetLayout> setLayouts;
+		VkPipelineLayoutCreateInfo pipelineLayoutInfo{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.pNext = nullptr,
+			.flags = 0,
+			.setLayoutCount = 0, // To set
+			.pSetLayouts = nullptr, // To set
+			.pushConstantRangeCount = 0,
+			.pPushConstantRanges = nullptr
+		};
+
+		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout };
+		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
+		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(this->device.get(), &pipelineLayoutInfo, nullptr, &this->simplePipelineLayout));
+
+		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout, this->mirrorMaterialLevelUniformDescriptorSetLayout };
+		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
+		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(this->device.get(), &pipelineLayoutInfo, nullptr, &this->mirrorPipelineLayout));
+
+		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout, this->environmentMaterialLevelUniformDescriptorSetLayout };
+		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
+		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(this->device.get(), &pipelineLayoutInfo, nullptr, &this->environmentPipelineLayout));
+
+		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout, this->lambertianMaterialLevelUniformDescriptorSetLayout };
+		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
+		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(this->device.get(), &pipelineLayoutInfo, nullptr, &this->lambertianPipelineLayout));
+
+		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout, this->pbrMaterialLevelUniformDescriptorSetLayout };
+		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
+		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(this->device.get(), &pipelineLayoutInfo, nullptr, &this->pbrPipelineLayout));
+	}
+
 	// Create graphics pipeline
 	{
-		std::vector<char> vertShaderCode;
-		std::vector<char> fragShaderCode;
+		VkShaderModule simpleVertShaderModule = this->createShaderModule("../spv/simple.vert.spv");
+		VkShaderModule simpleFragShaderModule = this->createShaderModule("../spv/simple.frag.spv");
+		VkShaderModule mirrorVertShaderModule = this->createShaderModule("../spv/mirror.vert.spv");
+		VkShaderModule mirrorFragShaderModule = this->createShaderModule("../spv/mirror.frag.spv");
+		VkShaderModule environmentVertShaderModule = this->createShaderModule("../spv/environment.vert.spv");
+		VkShaderModule environmentFragShaderModule = this->createShaderModule("../spv/environment.frag.spv");
+		VkShaderModule lambertianVertShaderModule = this->createShaderModule("../spv/lambertian.vert.spv");
+		VkShaderModule lambertianFragShaderModule = this->createShaderModule("../spv/lambertian.frag.spv");
+		VkShaderModule pbrVertShaderModule = this->createShaderModule("../spv/pbr.vert.spv");
+		VkShaderModule pbrFragShaderModule = this->createShaderModule("../spv/pbr.frag.spv");
 
-		std::ifstream fin;
-		fin.open("../spv/shader.vert.spv", std::ios::binary | std::ios::in);
-		fin.seekg(0, std::ios::end);
-		vertShaderCode.resize(static_cast<std::size_t>(fin.tellg()));
-		fin.seekg(0, std::ios::beg);
-		fin.read(vertShaderCode.data(), vertShaderCode.size());
-		fin.close();
-
-		fin.open("../spv/shader.frag.spv", std::ios::binary | std::ios::in);
-		fin.seekg(0, std::ios::end);
-		fragShaderCode.resize(static_cast<std::size_t>(fin.tellg()));
-		fin.seekg(0, std::ios::beg);
-		fin.read(fragShaderCode.data(), fragShaderCode.size());
-		fin.close();
-
-		VkShaderModule vertShaderModule;
-		{
-			VkShaderModuleCreateInfo createInfo{
-				.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-				.pNext = nullptr,
-				.flags = 0,
-				.codeSize = vertShaderCode.size(),
-				.pCode = reinterpret_cast<const uint32_t*>(vertShaderCode.data())
-			};
-			JJYOU_VK_UTILS_CHECK(vkCreateShaderModule(this->device.get(), &createInfo, nullptr, &vertShaderModule));
-		}
-		VkShaderModule fragShaderModule;
-		{
-			VkShaderModuleCreateInfo createInfo{
-				.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-				.pNext = nullptr,
-				.flags = 0,
-				.codeSize = fragShaderCode.size(),
-				.pCode = reinterpret_cast<const uint32_t*>(fragShaderCode.data())
-			};
-			JJYOU_VK_UTILS_CHECK(vkCreateShaderModule(this->device.get(), &createInfo, nullptr, &fragShaderModule));
-		}
-		VkPipelineShaderStageCreateInfo vertShaderStageInfo{
+		std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages = { {
+			VkPipelineShaderStageCreateInfo{
 				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 				.pNext = nullptr,
 				.flags = 0,
 				.stage = VK_SHADER_STAGE_VERTEX_BIT,
-				.module = vertShaderModule,
+				.module = nullptr, // To set
 				.pName = "main",
 				.pSpecializationInfo = nullptr
-		};
-		VkPipelineShaderStageCreateInfo fragShaderStageInfo{
+			},
+			VkPipelineShaderStageCreateInfo{
 				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 				.pNext = nullptr,
 				.flags = 0,
 				.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-				.module = fragShaderModule,
+				.module = nullptr, // To set
 				.pName = "main",
 				.pSpecializationInfo = nullptr
-		};
-		std::vector<VkPipelineShaderStageCreateInfo> shaderStages = { vertShaderStageInfo, fragShaderStageInfo };
+			}
+		} };
 
-		VkVertexInputBindingDescription bindingDescription{
+		VkVertexInputBindingDescription simpleBindingDescription{
 			.binding = 0,
 			.stride = 28,
 			.inputRate = VK_VERTEX_INPUT_RATE_VERTEX
 		};
-		std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions = { {
+		VkVertexInputBindingDescription materialBindingDescription{
+			.binding = 0,
+			.stride = 52,
+			.inputRate = VK_VERTEX_INPUT_RATE_VERTEX
+		};
+		std::array<VkVertexInputAttributeDescription, 3> simpleAttributeDescriptions = { {
 			VkVertexInputAttributeDescription{
 				.location = 0,
 				.binding = 0,
@@ -474,14 +491,46 @@ Engine::Engine(
 				.offset = 24
 			}
 		} };
+		std::array<VkVertexInputAttributeDescription, 5> materialAttributeDescriptions = { {
+			VkVertexInputAttributeDescription{
+				.location = 0,
+				.binding = 0,
+				.format = VK_FORMAT_R32G32B32_SFLOAT,
+				.offset = 0
+			},
+			VkVertexInputAttributeDescription{
+				.location = 1,
+				.binding = 0,
+				.format = VK_FORMAT_R32G32B32_SFLOAT,
+				.offset = 12
+			},
+			VkVertexInputAttributeDescription{
+				.location = 2,
+				.binding = 0,
+				.format = VK_FORMAT_R32G32B32A32_SFLOAT,
+				.offset = 24
+			},
+			VkVertexInputAttributeDescription{
+				.location = 3,
+				.binding = 0,
+				.format = VK_FORMAT_R32G32_SFLOAT,
+				.offset = 40
+			},
+			VkVertexInputAttributeDescription{
+				.location = 4,
+				.binding = 0,
+				.format = VK_FORMAT_R8G8B8A8_UNORM,
+				.offset = 48
+			}
+		} };
 		VkPipelineVertexInputStateCreateInfo vertexInputInfo{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 			.pNext = nullptr,
 			.flags = 0,
 			.vertexBindingDescriptionCount = 1,
-			.pVertexBindingDescriptions = &bindingDescription,
-			.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size()),
-			.pVertexAttributeDescriptions = attributeDescriptions.data()
+			.pVertexBindingDescriptions = nullptr, // To set
+			.vertexAttributeDescriptionCount = 0, // To set
+			.pVertexAttributeDescriptions = nullptr // To set
 		};
 
 		VkPipelineInputAssemblyStateCreateInfo inputAssembly{
@@ -517,7 +566,6 @@ Engine::Engine(
 			.depthBiasSlopeFactor = 0.0f,
 			.lineWidth = 1.0f,
 		};
-
 
 		VkPipelineMultisampleStateCreateInfo multisampling{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
@@ -584,8 +632,7 @@ Engine::Engine(
 
 		std::vector<VkDynamicState> dynamicStates = {
 			VK_DYNAMIC_STATE_VIEWPORT,
-			VK_DYNAMIC_STATE_SCISSOR,
-			//VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY
+			VK_DYNAMIC_STATE_SCISSOR
 		};
 		VkPipelineDynamicStateCreateInfo dynamicState{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
@@ -595,45 +642,78 @@ Engine::Engine(
 			.pDynamicStates = dynamicStates.data()
 		};
 
-		std::vector<VkDescriptorSetLayout> setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout };
-		VkPipelineLayoutCreateInfo pipelineLayoutInfo{
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+		VkGraphicsPipelineCreateInfo pipelineInfo{
+			.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 			.pNext = nullptr,
 			.flags = 0,
-			.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size()),
-			.pSetLayouts = setLayouts.data(),
-			.pushConstantRangeCount = 0,
-			.pPushConstantRanges = nullptr
+			.stageCount = static_cast<std::uint32_t>(shaderStages.size()),
+			.pStages = shaderStages.data(),
+			.pVertexInputState = &vertexInputInfo,
+			.pInputAssemblyState = &inputAssembly,
+			.pTessellationState = nullptr,
+			.pViewportState = &viewportState,
+			.pRasterizationState = &rasterizer,
+			.pMultisampleState = &multisampling,
+			.pDepthStencilState = &depthStencil,
+			.pColorBlendState = &colorBlending,
+			.pDynamicState = &dynamicState,
+			.layout = nullptr, // To set
+			.renderPass = this->renderPass,
+			.subpass = 0,
+			.basePipelineHandle = nullptr,
+			.basePipelineIndex = -1
 		};
 
-		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(this->device.get(), &pipelineLayoutInfo, nullptr, &this->pipelineLayout))
+		shaderStages[0].module = simpleVertShaderModule;
+		shaderStages[1].module = simpleFragShaderModule;
+		vertexInputInfo.pVertexBindingDescriptions = &simpleBindingDescription;
+		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(simpleAttributeDescriptions.size());
+		vertexInputInfo.pVertexAttributeDescriptions = simpleAttributeDescriptions.data();
+		pipelineInfo.layout = this->simplePipelineLayout;
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(this->device.get(), nullptr, 1, &pipelineInfo, nullptr, &this->simplePipeline));
 
-			VkGraphicsPipelineCreateInfo pipelineInfo{
-				.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-				.pNext = nullptr,
-				.flags = 0,
-				.stageCount = static_cast<std::uint32_t>(shaderStages.size()),
-				.pStages = shaderStages.data(),
-				.pVertexInputState = &vertexInputInfo,
-				.pInputAssemblyState = &inputAssembly,
-				.pTessellationState = nullptr,
-				.pViewportState = &viewportState,
-				.pRasterizationState = &rasterizer,
-				.pMultisampleState = &multisampling,
-				.pDepthStencilState = &depthStencil,
-				.pColorBlendState = &colorBlending,
-				.pDynamicState = &dynamicState,
-				.layout = this->pipelineLayout,
-				.renderPass = this->renderPass,
-				.subpass = 0,
-				.basePipelineHandle = nullptr,
-				.basePipelineIndex = -1
-		};
+		shaderStages[0].module = mirrorVertShaderModule;
+		shaderStages[1].module = mirrorFragShaderModule;
+		vertexInputInfo.pVertexBindingDescriptions = &materialBindingDescription;
+		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(materialAttributeDescriptions.size());
+		vertexInputInfo.pVertexAttributeDescriptions = materialAttributeDescriptions.data();
+		pipelineInfo.layout = this->mirrorPipelineLayout;
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(this->device.get(), nullptr, 1, &pipelineInfo, nullptr, &this->mirrorPipeline));
 
-		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(this->device.get(), nullptr, 1, &pipelineInfo, nullptr, &this->pipeline));
+		shaderStages[0].module = environmentVertShaderModule;
+		shaderStages[1].module = environmentFragShaderModule;
+		vertexInputInfo.pVertexBindingDescriptions = &materialBindingDescription;
+		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(materialAttributeDescriptions.size());
+		vertexInputInfo.pVertexAttributeDescriptions = materialAttributeDescriptions.data();
+		pipelineInfo.layout = this->environmentPipelineLayout;
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(this->device.get(), nullptr, 1, &pipelineInfo, nullptr, &this->environmentPipeline));
 
-		vkDestroyShaderModule(this->device.get(), fragShaderModule, nullptr);
-		vkDestroyShaderModule(this->device.get(), vertShaderModule, nullptr);
+		shaderStages[0].module = lambertianVertShaderModule;
+		shaderStages[1].module = lambertianFragShaderModule;
+		vertexInputInfo.pVertexBindingDescriptions = &materialBindingDescription;
+		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(materialAttributeDescriptions.size());
+		vertexInputInfo.pVertexAttributeDescriptions = materialAttributeDescriptions.data();
+		pipelineInfo.layout = this->lambertianPipelineLayout;
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(this->device.get(), nullptr, 1, &pipelineInfo, nullptr, &this->lambertianPipeline));
+
+		shaderStages[0].module = pbrVertShaderModule;
+		shaderStages[1].module = pbrFragShaderModule;
+		vertexInputInfo.pVertexBindingDescriptions = &materialBindingDescription;
+		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(materialAttributeDescriptions.size());
+		vertexInputInfo.pVertexAttributeDescriptions = materialAttributeDescriptions.data();
+		pipelineInfo.layout = this->pbrPipelineLayout;
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(this->device.get(), nullptr, 1, &pipelineInfo, nullptr, &this->pbrPipeline));
+
+		vkDestroyShaderModule(this->device.get(), simpleVertShaderModule, nullptr);
+		vkDestroyShaderModule(this->device.get(), simpleFragShaderModule, nullptr);
+		vkDestroyShaderModule(this->device.get(), mirrorVertShaderModule, nullptr);
+		vkDestroyShaderModule(this->device.get(), mirrorFragShaderModule, nullptr);
+		vkDestroyShaderModule(this->device.get(), environmentVertShaderModule, nullptr);
+		vkDestroyShaderModule(this->device.get(), environmentFragShaderModule, nullptr);
+		vkDestroyShaderModule(this->device.get(), lambertianVertShaderModule, nullptr);
+		vkDestroyShaderModule(this->device.get(), lambertianFragShaderModule, nullptr);
+		vkDestroyShaderModule(this->device.get(), pbrVertShaderModule, nullptr);
+		vkDestroyShaderModule(this->device.get(), pbrFragShaderModule, nullptr);
 	}
 }
 
@@ -642,8 +722,16 @@ Engine::~Engine(void) {
 	vkDeviceWaitIdle(this->device.get());
 
 	//Destroy pipeline and pipeline layout
-	vkDestroyPipeline(this->device.get(), this->pipeline, nullptr);
-	vkDestroyPipelineLayout(this->device.get(), this->pipelineLayout, nullptr);
+	vkDestroyPipeline(this->device.get(), this->simplePipeline, nullptr);
+	vkDestroyPipelineLayout(this->device.get(), this->simplePipelineLayout, nullptr);
+	vkDestroyPipeline(this->device.get(), this->mirrorPipeline, nullptr);
+	vkDestroyPipelineLayout(this->device.get(), this->mirrorPipelineLayout, nullptr);
+	vkDestroyPipeline(this->device.get(), this->environmentPipeline, nullptr);
+	vkDestroyPipelineLayout(this->device.get(), this->environmentPipelineLayout, nullptr);
+	vkDestroyPipeline(this->device.get(), this->lambertianPipeline, nullptr);
+	vkDestroyPipelineLayout(this->device.get(), this->lambertianPipelineLayout, nullptr);
+	vkDestroyPipeline(this->device.get(), this->pbrPipeline, nullptr);
+	vkDestroyPipelineLayout(this->device.get(), this->pbrPipelineLayout, nullptr);
 
 	// Destroy sync objects
 	for (size_t i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; i++) {
@@ -655,6 +743,10 @@ Engine::~Engine(void) {
 	// Destroy descriptor layout
 	vkDestroyDescriptorSetLayout(this->device.get(), this->viewLevelUniformDescriptorSetLayout, nullptr);
 	vkDestroyDescriptorSetLayout(this->device.get(), this->objectLevelUniformDescriptorSetLayout, nullptr);
+	vkDestroyDescriptorSetLayout(this->device.get(), this->mirrorMaterialLevelUniformDescriptorSetLayout, nullptr);
+	vkDestroyDescriptorSetLayout(this->device.get(), this->environmentMaterialLevelUniformDescriptorSetLayout, nullptr);
+	vkDestroyDescriptorSetLayout(this->device.get(), this->lambertianMaterialLevelUniformDescriptorSetLayout, nullptr);
+	vkDestroyDescriptorSetLayout(this->device.get(), this->pbrMaterialLevelUniformDescriptorSetLayout, nullptr);
 
 	// Destroy frame buffers
 	for (int i = 0; i < this->framebuffers.size(); ++i) {

@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <string>
 #include <vector>
+#include <set>
 #include <memory>
 #include <iostream>
 #include <functional>
@@ -12,25 +13,10 @@
 #include <vulkan/vulkan.h>
 #include <jjyou/vk/Vulkan.hpp>
 #include <jjyou/glsl/glsl.hpp>
+#include "Engine.hpp"
 #include "Culling.hpp"
 
 namespace s72 {
-
-	class Object;
-	class Camera;
-	class PerspectiveCamera;
-	class OrthographicCamera;
-	class Material;
-	class SimpleMaterial;
-	class EnvironmentMaterial;
-	class MirrorMaterial;
-	class LambertianMaterial;
-	class PbrMaterial;
-	class Environment;
-	class Mesh;
-	class Node;
-	class Scene;
-	class Driver;
 
 	class Object {
 	public:

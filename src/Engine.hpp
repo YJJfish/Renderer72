@@ -16,7 +16,6 @@
 #include <jjyou/glsl/glsl.hpp>
 #include <jjyou/vis/CameraView.hpp>
 #include <jjyou/io/Json.hpp>
-#include "Scene72.hpp"
 #include "VirtualSwapchain.hpp"
 #include "HostImage.hpp"
 #include "Clock.hpp"
@@ -52,14 +51,14 @@ public:
 
 	~Engine(void);
 
-	s72::Scene72::Ptr load(
+	std::shared_ptr<s72::Scene72> load(
 		const jjyou::io::Json<>& json,
 		const std::filesystem::path& baseDir
 	);
 
 	void destroy(s72::Scene72& scene72);
 
-	void setScene(s72::Scene72::Ptr pScene72);
+	void setScene(std::shared_ptr<s72::Scene72> pScene72);
 
 	void drawFrame();
 
@@ -130,7 +129,7 @@ public:
 	/** @name	Rendering Options
 	  */
 	//@{
-	s72::Scene72::Ptr pScene72{};
+	std::shared_ptr<s72::Scene72> pScene72{};
 	float currPlayTime = 0.0f;
 	float playRate = 1.0f;
 	bool paused = false;
@@ -186,8 +185,20 @@ public:
 	VkDescriptorSetLayout lambertianMaterialLevelUniformDescriptorSetLayout;
 	VkDescriptorSetLayout pbrMaterialLevelUniformDescriptorSetLayout;
 
-	VkPipelineLayout pipelineLayout;
-	VkPipeline pipeline;
+	VkPipelineLayout simplePipelineLayout;
+	VkPipeline simplePipeline;
+
+	VkPipelineLayout mirrorPipelineLayout;
+	VkPipeline mirrorPipeline;
+
+	VkPipelineLayout environmentPipelineLayout;
+	VkPipeline environmentPipeline;
+
+	VkPipelineLayout lambertianPipelineLayout;
+	VkPipeline lambertianPipeline;
+
+	VkPipelineLayout pbrPipelineLayout;
+	VkPipeline pbrPipeline;
 
 public:
 
@@ -230,5 +241,7 @@ public:
 		VkPipelineStageFlags dstStageMask,
 		VkImageSubresourceRange subresourceRange
 	);
+
+	VkShaderModule createShaderModule(const std::filesystem::path& path) const;
 
 };

@@ -1,4 +1,5 @@
 #include "Engine.hpp"
+#include "Scene72.hpp"
 
 void Engine::framebufferResizeCallback(GLFWwindow* window, int width, int height) {
 	Engine* engine = reinterpret_cast<Engine*>(glfwGetWindowUserPointer(window));

@@ -193,3 +193,27 @@ void Engine::insertImageMemoryBarrier(
 		0, nullptr,
 		1, &imageMemoryBarrier);
 }
+
+VkShaderModule Engine::createShaderModule(const std::filesystem::path& path) const {
+	std::vector<char> shaderCode;
+	std::ifstream fin;
+	fin.open(path, std::ios::binary | std::ios::in);
+	if (!fin.is_open()) {
+		throw std::runtime_error("Cannot find shader code from \"" + path.string() + "\"");
+	}
+	fin.seekg(0, std::ios::end);
+	shaderCode.resize(static_cast<std::size_t>(fin.tellg()));
+	fin.seekg(0, std::ios::beg);
+	fin.read(shaderCode.data(), shaderCode.size());
+	fin.close();
+	VkShaderModule shaderModule;
+	VkShaderModuleCreateInfo createInfo{
+		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+		.pNext = nullptr,
+		.flags = 0,
+		.codeSize = shaderCode.size(),
+		.pCode = reinterpret_cast<const uint32_t*>(shaderCode.data())
+	};
+	JJYOU_VK_UTILS_CHECK(vkCreateShaderModule(this->device.get(), &createInfo, nullptr, &shaderModule));
+	return shaderModule;
+}

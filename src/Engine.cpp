@@ -2,6 +2,7 @@
 #include <fstream>
 #include <exception>
 #include <stdexcept>
+#include "Scene72.hpp"
 #include "Culling.hpp"
 
 void Engine::setCameraMode(CameraMode cameraMode, std::optional<std::string> camera) {
@@ -93,9 +94,48 @@ void Engine::drawFrame() {
 
 		vkCmdBeginRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-		vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pipeline);
-
-		// Update view level uniform buffer
+		// Get the instances to render
+		struct InstanceToDraw {
+			jjyou::glsl::mat4 transform;
+			s72::Mesh::Ptr mesh;
+		};
+		std::vector<InstanceToDraw> simpleInstances;
+		std::vector<InstanceToDraw> mirrorInstances;
+		std::vector<InstanceToDraw> environmentInstances;
+		std::vector<InstanceToDraw> lambertianInstances;
+		std::vector<InstanceToDraw> pbrInstances;
+		std::function<bool(s72::Node::Ptr, const jjyou::glsl::mat4&)> getInstancesToDraw =
+			[&](s72::Node::Ptr node, const jjyou::glsl::mat4& transform) -> bool {
+			if (!node->mesh.expired()) {
+				s72::Mesh::Ptr mesh = node->mesh.lock();
+				InstanceToDraw instanceToDraw{ .transform = transform, .mesh = mesh };
+				if (mesh->material.lock()->materialType == "simple")
+					simpleInstances.push_back(instanceToDraw);
+				else if (mesh->material.lock()->materialType == "mirror")
+					mirrorInstances.push_back(instanceToDraw);
+				else if (mesh->material.lock()->materialType == "environment")
+					environmentInstances.push_back(instanceToDraw);
+				else if (mesh->material.lock()->materialType == "lambertian")
+					lambertianInstances.push_back(instanceToDraw);
+				else if (mesh->material.lock()->materialType == "pbd")
+					pbrInstances.push_back(instanceToDraw);
+			}
+			return true;
+			};
+		if (this->pScene72 != nullptr) {
+			//Scene72 are "+z" up, however in our coordinate the scene is "-y" up
+			jjyou::glsl::mat4 rootTransform;
+			rootTransform[0][0] = 1.0f;
+			rootTransform[2][1] = -1.0f;
+			rootTransform[1][2] = 1.0f;
+			rootTransform[3][3] = 1.0f;
+			this->pScene72->traverse(
+				this->currPlayTime,
+				rootTransform,
+				getInstancesToDraw
+			);
+		}
+		// Get view matrices and culling matrices
 		jjyou::glsl::mat4 viewingProjection;
 		jjyou::glsl::mat4 viewingView;
 		float viewingAspectRatio{};
@@ -125,19 +165,17 @@ void Engine::drawFrame() {
 				}
 				return true;
 				};
-			if (this->pScene72 != nullptr) {
-				//Scene72 are "+z" up, however in our coordinate the scene is "-y" up
-				jjyou::glsl::mat4 rootTransform;
-				rootTransform[0][0] = 1.0f;
-				rootTransform[2][1] = -1.0f;
-				rootTransform[1][2] = 1.0f;
-				rootTransform[3][3] = 1.0f;
-				this->pScene72->traverse(
-					this->currPlayTime,
-					rootTransform,
-					getCameraParam
-				);
-			}
+			//Scene72 are "+z" up, however in our coordinate the scene is "-y" up
+			jjyou::glsl::mat4 rootTransform;
+			rootTransform[0][0] = 1.0f;
+			rootTransform[2][1] = -1.0f;
+			rootTransform[1][2] = 1.0f;
+			rootTransform[3][3] = 1.0f;
+			this->pScene72->traverse(
+				this->currPlayTime,
+				rootTransform,
+				getCameraParam
+			);
 			if (this->cameraMode == CameraMode::SCENE) {
 				viewingAspectRatio = userCameraAspectRatio;
 				viewingProjection = userCameraProjection;
@@ -153,13 +191,7 @@ void Engine::drawFrame() {
 				cullingView = userCameraView;
 			}
 		}
-		{
-			Engine::ViewLevelUniform viewLevelUniform{
-				.projection = viewingProjection,
-				.view = viewingView
-			};
-			memcpy(this->frameData[this->currentFrame].viewLevelUniformBufferMemory.mappedAddress(), &viewLevelUniform, sizeof(Engine::ViewLevelUniform));
-		}
+
 		// Set viewport and scissor.
 		// This is easy for the scene/debug camera.
 		// But for user cameras, the viewport needs to be computed according to the camera parameters.
@@ -177,56 +209,147 @@ void Engine::drawFrame() {
 			.minDepth = 0.0f,
 			.maxDepth = 1.0f
 		};
-		vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &viewport);
-
 		VkRect2D scissor{
 			.offset = { 0, 0 },
 			.extent = screenExtent,
 		};
-		vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &scissor);
-
-		// Actually draw
+		// Compute dynamic uniform buffer offset
 		VkDeviceSize minAlignment = this->physicalDevice.deviceProperties().limits.minUniformBufferOffsetAlignment;
 		VkDeviceSize dynamicBufferOffset = sizeof(Engine::ObjectLevelUniform);
 		if (minAlignment > 0)
 			dynamicBufferOffset = (dynamicBufferOffset + minAlignment - 1) & ~(minAlignment - 1);
+
+		// Actually draw
+		Engine::ViewLevelUniform viewLevelUniform{
+				.projection = viewingProjection,
+				.view = viewingView
+		};
+		memcpy(this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformBufferMemory.mappedAddress(), &viewLevelUniform, sizeof(Engine::ViewLevelUniform));
 		std::size_t instanceCount = 0;
-		std::function<bool(s72::Node::Ptr, const jjyou::glsl::mat4&)> drawNodeMesh =
-			[&](s72::Node::Ptr node, const jjyou::glsl::mat4& transform) -> bool {
-			if (!node->mesh.expired()) {
-				s72::Mesh::Ptr mesh = node->mesh.lock();
+
+		if (!simpleInstances.empty()) {
+			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->simplePipeline);
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &viewport);
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &scissor);
+			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->simplePipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
+			for (const auto& instanceToDraw : simpleInstances) {
 				if (this->cullingMode == CullingMode::NONE ||
-					this->cullingMode == CullingMode::FRUSTUM && mesh->bbox.insideFrustum(cullingProjection, cullingView, transform)
+					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(cullingProjection, cullingView, instanceToDraw.transform)
 					) {
 					VkDeviceSize vertexBufferOffsets = 0;
-					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &mesh->vertexBuffer, &vertexBufferOffsets);
-					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pipelineLayout, 0, 1, &this->frameData[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
+					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
 					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
 					instanceCount++;
 					Engine::ObjectLevelUniform objectLevelUniform{
-						.model = transform,
-						.normal = jjyou::glsl::transpose(jjyou::glsl::inverse(transform))
+						.model = instanceToDraw.transform,
+						.normal = jjyou::glsl::transpose(jjyou::glsl::inverse(instanceToDraw.transform))
 					};
-					char* dst = reinterpret_cast<char*>(this->frameData[this->currentFrame].objectLevelUniformBufferMemory.mappedAddress()) + dynamicOffset;
+					char* dst = reinterpret_cast<char*>(this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformBufferMemory.mappedAddress()) + dynamicOffset;
 					memcpy(reinterpret_cast<void*>(dst), &objectLevelUniform, sizeof(Engine::ObjectLevelUniform));
-					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pipelineLayout, 1, 1, &this->frameData[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
-					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, mesh->count, 1, 0, 0);
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->simplePipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
+					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
 				}
 			}
-			return true;
-			};
-		if (this->pScene72 != nullptr) {
-			//Scene72 are "+z" up, however in our coordinate the scene is "-y" up
-			jjyou::glsl::mat4 rootTransform;
-			rootTransform[0][0] = 1.0f;
-			rootTransform[2][1] = -1.0f;
-			rootTransform[1][2] = 1.0f;
-			rootTransform[3][3] = 1.0f;
-			this->pScene72->traverse(
-				this->currPlayTime,
-				rootTransform,
-				drawNodeMesh
-			);
+		}
+		if (!mirrorInstances.empty()) {
+			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorPipeline);
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &viewport);
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &scissor);
+			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
+			for (const auto& instanceToDraw : mirrorInstances) {
+				if (this->cullingMode == CullingMode::NONE ||
+					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(cullingProjection, cullingView, instanceToDraw.transform)
+					) {
+					VkDeviceSize vertexBufferOffsets = 0;
+					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
+					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
+					instanceCount++;
+					Engine::ObjectLevelUniform objectLevelUniform{
+						.model = instanceToDraw.transform,
+						.normal = jjyou::glsl::transpose(jjyou::glsl::inverse(instanceToDraw.transform))
+					};
+					char* dst = reinterpret_cast<char*>(this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformBufferMemory.mappedAddress()) + dynamicOffset;
+					memcpy(reinterpret_cast<void*>(dst), &objectLevelUniform, sizeof(Engine::ObjectLevelUniform));
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorPipelineLayout, 2, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].materialLevelUniformDescriptorSets[instanceToDraw.mesh->material.lock()->idx], 0, nullptr);
+					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
+				}
+			}
+		}
+		if (!environmentInstances.empty()) {
+			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentPipeline);
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &viewport);
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &scissor);
+			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
+			for (const auto& instanceToDraw : environmentInstances) {
+				if (this->cullingMode == CullingMode::NONE ||
+					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(cullingProjection, cullingView, instanceToDraw.transform)
+					) {
+					VkDeviceSize vertexBufferOffsets = 0;
+					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
+					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
+					instanceCount++;
+					Engine::ObjectLevelUniform objectLevelUniform{
+						.model = instanceToDraw.transform,
+						.normal = jjyou::glsl::transpose(jjyou::glsl::inverse(instanceToDraw.transform))
+					};
+					char* dst = reinterpret_cast<char*>(this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformBufferMemory.mappedAddress()) + dynamicOffset;
+					memcpy(reinterpret_cast<void*>(dst), &objectLevelUniform, sizeof(Engine::ObjectLevelUniform));
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentPipelineLayout, 2, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].materialLevelUniformDescriptorSets[instanceToDraw.mesh->material.lock()->idx], 0, nullptr);
+					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
+				}
+			}
+		}
+		if (!lambertianInstances.empty()) {
+			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianPipeline);
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &viewport);
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &scissor);
+			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
+			for (const auto& instanceToDraw : lambertianInstances) {
+				if (this->cullingMode == CullingMode::NONE ||
+					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(cullingProjection, cullingView, instanceToDraw.transform)
+					) {
+					VkDeviceSize vertexBufferOffsets = 0;
+					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
+					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
+					instanceCount++;
+					Engine::ObjectLevelUniform objectLevelUniform{
+						.model = instanceToDraw.transform,
+						.normal = jjyou::glsl::transpose(jjyou::glsl::inverse(instanceToDraw.transform))
+					};
+					char* dst = reinterpret_cast<char*>(this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformBufferMemory.mappedAddress()) + dynamicOffset;
+					memcpy(reinterpret_cast<void*>(dst), &objectLevelUniform, sizeof(Engine::ObjectLevelUniform));
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianPipelineLayout, 2, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].materialLevelUniformDescriptorSets[instanceToDraw.mesh->material.lock()->idx], 0, nullptr);
+					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
+				}
+			}
+		}
+		if (!pbrInstances.empty()) {
+			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pbrPipeline);
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &viewport);
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &scissor);
+			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pbrPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
+			for (const auto& instanceToDraw : lambertianInstances) {
+				if (this->cullingMode == CullingMode::NONE ||
+					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(cullingProjection, cullingView, instanceToDraw.transform)
+					) {
+					VkDeviceSize vertexBufferOffsets = 0;
+					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
+					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
+					instanceCount++;
+					Engine::ObjectLevelUniform objectLevelUniform{
+						.model = instanceToDraw.transform,
+						.normal = jjyou::glsl::transpose(jjyou::glsl::inverse(instanceToDraw.transform))
+					};
+					char* dst = reinterpret_cast<char*>(this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformBufferMemory.mappedAddress()) + dynamicOffset;
+					memcpy(reinterpret_cast<void*>(dst), &objectLevelUniform, sizeof(Engine::ObjectLevelUniform));
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pbrPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pbrPipelineLayout, 2, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].materialLevelUniformDescriptorSets[instanceToDraw.mesh->material.lock()->idx], 0, nullptr);
+					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
+				}
+			}
 		}
 		// Finish
 		vkCmdEndRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer);
