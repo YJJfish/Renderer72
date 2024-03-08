@@ -856,7 +856,7 @@ public:
 			}
 		};
 		this->_imageView.resize(this->_numLayers);
-		for (int i = 0; i < this->_numLayers; ++i) {
+		for (std::uint32_t i = 0; i < this->_numLayers; ++i) {
 			viewInfo.subresourceRange.baseArrayLayer = i;
 			JJYOU_VK_UTILS_CHECK(vkCreateImageView(this->_pDevice->get(), &viewInfo, nullptr, &this->_imageView[i]));
 		}
@@ -875,7 +875,7 @@ public:
 		if (this->_pDevice != nullptr) {
 			this->_pAllocator->free(this->_imageMemory);
 			this->_pAllocator = nullptr;
-			for (int i = 0; i < this->_numLayers; ++i)
+			for (std::uint32_t i = 0; i < this->_numLayers; ++i)
 				vkDestroyImageView(this->_pDevice->get(), this->_imageView[i], nullptr);
 			this->_imageView.clear();
 			vkDestroyImage(this->_pDevice->get(), this->_image, nullptr);
@@ -1156,7 +1156,7 @@ std::pair<VkImage, jjyou::vk::Memory> downloadDeviceImage(
 			.depth = 1
 		}
 	};
-	for (int layer = 0; layer < deviceImage.numLayers(); ++layer) {
+	for (std::uint32_t layer = 0; layer < deviceImage.numLayers(); ++layer) {
 		copyInfo.srcSubresource.baseArrayLayer = layer;
 		copyInfo.dstOffset.y = deviceImage.extent().height * layer;
 		vkCmdCopyImage(
@@ -1356,7 +1356,7 @@ jjyou::glsl::vec<unsigned char, 4> packRGBE(jjyou::glsl::vec3 color) {
 		return jjyou::glsl::vec<unsigned char, 4>(0);
 	jjyou::glsl::vec<unsigned char, 4> ret{};
 	for (int i = 0; i < 3; ++i)
-		ret[i] = static_cast<unsigned char>(std::clamp<float>(color[i] / std::powf(2.0f, expo) * 256.0f - 0.5f, 0.0f, 255.0f));
+		ret[i] = static_cast<unsigned char>(std::clamp<float>(color[i] / std::powf(2.0f, static_cast<float>(expo)) * 256.0f - 0.5f, 0.0f, 255.0f));
 	ret.a = static_cast<unsigned char>(std::clamp<int>(expo + 128, 0, 255));
 	return ret;
 }
@@ -1383,20 +1383,23 @@ int main(int argc, char** argv) {
 	if (argParser.listPhysicalDevices) {
 		jjyou::vk::PhysicalDeviceSelector selector(instance, nullptr);
 		std::vector<jjyou::vk::PhysicalDevice> physicalDevices = selector.listAllPhysicalDevices();
-		for (const auto& physicalDevice : physicalDevices) {
+		for (const auto& _physicalDevice : physicalDevices) {
 			std::cout << "===================================================" << std::endl;
-			std::cout << "Device name: " << physicalDevice.deviceProperties().deviceName << std::endl;
-			std::cout << "API version: " << physicalDevice.deviceProperties().apiVersion << std::endl;
-			std::cout << "Driver version: " << physicalDevice.deviceProperties().driverVersion << std::endl;
-			std::cout << "Vendor ID: " << physicalDevice.deviceProperties().vendorID << std::endl;
-			std::cout << "Device ID: " << physicalDevice.deviceProperties().deviceID << std::endl;
-			std::cout << "Device type: " << string_VkPhysicalDeviceType(physicalDevice.deviceProperties().deviceType) << std::endl;
+			std::cout << "Device name: " << _physicalDevice.deviceProperties().deviceName << std::endl;
+			std::cout << "API version: " << _physicalDevice.deviceProperties().apiVersion << std::endl;
+			std::cout << "Driver version: " << _physicalDevice.deviceProperties().driverVersion << std::endl;
+			std::cout << "Vendor ID: " << _physicalDevice.deviceProperties().vendorID << std::endl;
+			std::cout << "Device ID: " << _physicalDevice.deviceProperties().deviceID << std::endl;
+			std::cout << "Device type: " << string_VkPhysicalDeviceType(_physicalDevice.deviceProperties().deviceType) << std::endl;
 		}
 		std::cout << "===================================================" << std::endl;
+		instance.destroy();
 		exit(0);
 	}
-	if (!argParser.lambertian && !argParser.prefilteredenv && !argParser.envbrdf)
+	if (!argParser.lambertian && !argParser.prefilteredenv && !argParser.envbrdf) {
+		instance.destroy();
 		exit(0);
+	}
 	// Init vulkan loader
 	if (argParser.enableValidation) {
 		loader.load(instance.get(), VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -1727,21 +1730,21 @@ int main(int argc, char** argv) {
 			.basePipelineIndex = 0
 		};
 		if (argParser.lambertian) {
-			VkShaderModule compShaderModule = createShaderModule(device, "../spv/cube/lambertian.comp.spv");
+			VkShaderModule compShaderModule = createShaderModule(device, "../spv/cube/shader/lambertian.comp.spv");
 			pipelineInfo.stage.module = compShaderModule;
 			pipelineInfo.layout = lambertianPipelineLayout;
 			JJYOU_VK_UTILS_CHECK(vkCreateComputePipelines(device.get(), nullptr, 1, &pipelineInfo, nullptr, &lambertianPipeline));
 			vkDestroyShaderModule(device.get(), compShaderModule, nullptr);
 		}
 		if (argParser.prefilteredenv) {
-			VkShaderModule compShaderModule = createShaderModule(device, "../spv/cube/prefilteredenv.comp.spv");
+			VkShaderModule compShaderModule = createShaderModule(device, "../spv/cube/shader/prefilteredenv.comp.spv");
 			pipelineInfo.stage.module = compShaderModule;
 			pipelineInfo.layout = prefilteredenvPipelineLayout;
 			JJYOU_VK_UTILS_CHECK(vkCreateComputePipelines(device.get(), nullptr, 1, &pipelineInfo, nullptr, &prefilteredenvPipeline));
 			vkDestroyShaderModule(device.get(), compShaderModule, nullptr);
 		}
 		if (argParser.envbrdf) {
-			VkShaderModule compShaderModule = createShaderModule(device, "../spv/cube/envbrdf.comp.spv");
+			VkShaderModule compShaderModule = createShaderModule(device, "../spv/cube/shader/envbrdf.comp.spv");
 			pipelineInfo.stage.module = compShaderModule;
 			pipelineInfo.layout = envBRDFPipelineLayout;
 			JJYOU_VK_UTILS_CHECK(vkCreateComputePipelines(device.get(), nullptr, 1, &pipelineInfo, nullptr, &envBRDFPipeline));
@@ -1881,8 +1884,8 @@ int main(int argc, char** argv) {
 		}
 		// Render
 		std::vector<LambertianSampleRange> sampleRanges;
-		for (int x = 0; x < (inputImage.extent().width + argParser.lambertianSampleBatch.x - 1) / argParser.lambertianSampleBatch.x; ++x)
-			for (int y = 0; y < (inputImage.extent().height + argParser.lambertianSampleBatch.y - 1) / argParser.lambertianSampleBatch.y; ++y) {
+		for (int x = 0; x < (static_cast<int>(inputImage.extent().width) + argParser.lambertianSampleBatch.x - 1) / argParser.lambertianSampleBatch.x; ++x)
+			for (int y = 0; y < (static_cast<int>(inputImage.extent().height) + argParser.lambertianSampleBatch.y - 1) / argParser.lambertianSampleBatch.y; ++y) {
 				sampleRanges.push_back(
 					LambertianSampleRange{
 						.fRange = jjyou::glsl::ivec2(0, 6),
@@ -1949,13 +1952,14 @@ int main(int argc, char** argv) {
 			stbi_write_png(imagePath.string().c_str(), hostImage.width(), hostImage.height(), 4, hostImage.data(), hostImage.width() * 4);
 		}
 		// Cleanup
-		{
-			vkFreeDescriptorSets(device.get(), descriptorPool, 1, &lambertianDescriptorSet);
-			inputImage.destroy();
-			sumLight.destroy();
-			sumWeight.destroy();
-			outputImage.destroy();
-		}
+		vkFreeDescriptorSets(device.get(), descriptorPool, 1, &lambertianDescriptorSet);
+		vkDestroyDescriptorSetLayout(device.get(), lambertianDescriptorSetLayout, nullptr);
+		vkDestroyPipelineLayout(device.get(), lambertianPipelineLayout, nullptr);
+		vkDestroyPipeline(device.get(), lambertianPipeline, nullptr);
+		inputImage.destroy();
+		sumLight.destroy();
+		sumWeight.destroy();
+		outputImage.destroy();
 	}
 	if (argParser.prefilteredenv) {
 		// Create descriptor sets
@@ -2041,20 +2045,20 @@ int main(int argc, char** argv) {
 				std::vector<VkDescriptorImageInfo> sumLightInfos;
 				std::vector<VkDescriptorImageInfo> sumAreaInfos;
 				std::vector<VkDescriptorImageInfo> outputImageInfos;
-				for (int i = 0; i < 6; ++i) {
+				for (int j = 0; j < 6; ++j) {
 					sumLightInfos.push_back(VkDescriptorImageInfo{
 						.sampler = nullptr,
-						.imageView = sumLight.imageView(i),
+						.imageView = sumLight.imageView(j),
 						.imageLayout = VK_IMAGE_LAYOUT_GENERAL
 						});
 					sumAreaInfos.push_back(VkDescriptorImageInfo{
 						.sampler = nullptr,
-						.imageView = sumWeight.imageView(i),
+						.imageView = sumWeight.imageView(j),
 						.imageLayout = VK_IMAGE_LAYOUT_GENERAL
 						});
 					outputImageInfos.push_back(VkDescriptorImageInfo{
 						.sampler = nullptr,
-						.imageView = outputImage.imageView(i),
+						.imageView = outputImage.imageView(j),
 						.imageLayout = VK_IMAGE_LAYOUT_GENERAL
 						});
 				}
@@ -2167,6 +2171,9 @@ int main(int argc, char** argv) {
 		}
 		inputCubeMap.destroy();
 		vkFreeDescriptorSets(device.get(), descriptorPool, 1, &prefilteredenvDescriptorSet);
+		vkDestroyDescriptorSetLayout(device.get(), prefilteredenvDescriptorSetLayout, nullptr);
+		vkDestroyPipelineLayout(device.get(), prefilteredenvPipelineLayout, nullptr);
+		vkDestroyPipeline(device.get(), prefilteredenvPipeline, nullptr);
 	}
 	if (argParser.envbrdf) {
 		// Create descriptor sets
@@ -2328,31 +2335,20 @@ int main(int argc, char** argv) {
 			vkFreeDescriptorSets(device.get(), descriptorPool, 1, &envBRDFDescriptorSet);
 			sumLight.destroy();
 			outputImage.destroy();
+			vkDestroyDescriptorSetLayout(device.get(), envBRDFDescriptorSetLayout, nullptr);
+			vkDestroyPipelineLayout(device.get(), envBRDFPipelineLayout, nullptr);
+			vkDestroyPipeline(device.get(), envBRDFPipeline, nullptr);
 		}
 	}
 
-	//// Clean up
-	//vkDeviceWaitIdle(device.get());
-	//if (argParser.lambertianOutputImage.has_value()) {
-	//	vkDestroyPipeline(device.get(), lambertianPipeline, nullptr);
-	//	vkDestroyPipelineLayout(device.get(), lambertianPipelineLayout, nullptr);
-	//}
-	//if (argParser.ggxOutputImage.has_value()) {
-
-	//}
-	//vkDestroyFence(device.get(), renderFinishFence, nullptr);
-	//vkDestroyDescriptorPool(device.get(), descriptorPool, nullptr);
-	//vkDestroyDescriptorSetLayout(device.get(), cubeMapSamplerDescriptorSetLayout, nullptr);
-	//vkDestroyFramebuffer(device.get(), framebuffer, nullptr);
-	//vkDestroyRenderPass(device.get(), renderPass, nullptr);
-	//vkDestroyImageView(device.get(), renderTargetView, nullptr);
-	//allocator.free(renderTargetMemory);
-	//vkDestroyImage(device.get(), renderTarget, nullptr);
-	//inputCubeMap.destroy();
-	//allocator.destory();
-	//vkDestroyCommandPool(device.get(), transferCommandPool, nullptr);
-	//vkDestroyCommandPool(device.get(), graphicsCommandPool, nullptr);
-	//device.destroy();
-	//instance.destroy();
+	// Clean up
+	vkDeviceWaitIdle(device.get());
+	vkDestroyDescriptorPool(device.get(), descriptorPool, nullptr);
+	allocator.destory();
+	vkDestroyCommandPool(device.get(), transferCommandPool, nullptr);
+	vkDestroyCommandPool(device.get(), computeCommandPool, nullptr);
+	vkDestroyFence(device.get(), computeFinishFence, nullptr);
+	device.destroy();
+	instance.destroy();
 	exit(0);
 }

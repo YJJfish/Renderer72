@@ -490,18 +490,18 @@ Engine::Engine(
 
 	// Create graphics pipeline
 	{
-		VkShaderModule simpleVertShaderModule = this->createShaderModule("../spv/renderer72/simple.vert.spv");
-		VkShaderModule simpleFragShaderModule = this->createShaderModule("../spv/renderer72/simple.frag.spv");
-		VkShaderModule mirrorVertShaderModule = this->createShaderModule("../spv/renderer72/mirror.vert.spv");
-		VkShaderModule mirrorFragShaderModule = this->createShaderModule("../spv/renderer72/mirror.frag.spv");
-		VkShaderModule environmentVertShaderModule = this->createShaderModule("../spv/renderer72/environment.vert.spv");
-		VkShaderModule environmentFragShaderModule = this->createShaderModule("../spv/renderer72/environment.frag.spv");
-		VkShaderModule lambertianVertShaderModule = this->createShaderModule("../spv/renderer72/lambertian.vert.spv");
-		VkShaderModule lambertianFragShaderModule = this->createShaderModule("../spv/renderer72/lambertian.frag.spv");
-		VkShaderModule pbrVertShaderModule = this->createShaderModule("../spv/renderer72/pbr.vert.spv");
-		VkShaderModule pbrFragShaderModule = this->createShaderModule("../spv/renderer72/pbr.frag.spv");
-		VkShaderModule skyboxVertShaderModule = this->createShaderModule("../spv/renderer72/skybox.vert.spv");
-		VkShaderModule skyboxFragShaderModule = this->createShaderModule("../spv/renderer72/skybox.frag.spv");
+		VkShaderModule simpleVertShaderModule = this->createShaderModule("../spv/renderer/shader/simple.vert.spv");
+		VkShaderModule simpleFragShaderModule = this->createShaderModule("../spv/renderer/shader/simple.frag.spv");
+		VkShaderModule mirrorVertShaderModule = this->createShaderModule("../spv/renderer/shader/mirror.vert.spv");
+		VkShaderModule mirrorFragShaderModule = this->createShaderModule("../spv/renderer/shader/mirror.frag.spv");
+		VkShaderModule environmentVertShaderModule = this->createShaderModule("../spv/renderer/shader/environment.vert.spv");
+		VkShaderModule environmentFragShaderModule = this->createShaderModule("../spv/renderer/shader/environment.frag.spv");
+		VkShaderModule lambertianVertShaderModule = this->createShaderModule("../spv/renderer/shader/lambertian.vert.spv");
+		VkShaderModule lambertianFragShaderModule = this->createShaderModule("../spv/renderer/shader/lambertian.frag.spv");
+		VkShaderModule pbrVertShaderModule = this->createShaderModule("../spv/renderer/shader/pbr.vert.spv");
+		VkShaderModule pbrFragShaderModule = this->createShaderModule("../spv/renderer/shader/pbr.frag.spv");
+		VkShaderModule skyboxVertShaderModule = this->createShaderModule("../spv/renderer/shader/skybox.vert.spv");
+		VkShaderModule skyboxFragShaderModule = this->createShaderModule("../spv/renderer/shader/skybox.frag.spv");
 
 		std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages = { {
 			VkPipelineShaderStageCreateInfo{

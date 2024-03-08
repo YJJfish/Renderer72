@@ -24,7 +24,7 @@ inline jjyou::glsl::vec<unsigned char, 4> packRGBE(jjyou::glsl::vec3 color) {
 		return jjyou::glsl::vec<unsigned char, 4>(0);
 	jjyou::glsl::vec<unsigned char, 4> ret{};
 	for (int i = 0; i < 3; ++i)
-		ret[i] = static_cast<unsigned char>(std::clamp<float>(color[i] / std::powf(2.0f, expo) * 256.0f - 0.5f, 0.0f, 255.0f));
+		ret[i] = static_cast<unsigned char>(std::clamp<float>(color[i] / std::powf(2.0f, static_cast<float>(expo)) * 256.0f - 0.5f, 0.0f, 255.0f));
 	ret.a = static_cast<unsigned char>(std::clamp<int>(expo + 128, 0, 255));
 	return ret;
 }
@@ -84,7 +84,7 @@ static jjyou::vk::Texture2D loadTexture(
 		ElementType _defaultValue{};
 		for (int i = 0; i < Length; ++i)
 			_defaultValue[i] = defaultValue[i];
-		if (Length == 3) {
+		if constexpr (Length == 3) {
 			_defaultValue[3] = 255;
 		}
 		texture.create(
@@ -103,7 +103,7 @@ static jjyou::vk::Texture2D loadTexture(
 		if (material[textureName].type() != jjyou::io::JsonType::Object) {
 			// Constant value.
 			ElementType constantValue{};
-			if (Length == 1) {
+			if constexpr (Length == 1) {
 				if (!normalConversion)
 					constantValue[0] = jjyou::utils::color_cast<unsigned char>(static_cast<float>(material[textureName]));
 				else
@@ -116,7 +116,7 @@ static jjyou::vk::Texture2D loadTexture(
 				else
 					for (int i = 0; i < Length; ++i)
 						constantValue[i] = jjyou::utils::color_cast<unsigned char>(static_cast<float>(material[textureName][i]) / 2.0 + 0.5);
-				if (Length == 3)
+				if constexpr (Length == 3)
 					constantValue[3] = 255;
 			}
 			texture.create(
@@ -166,7 +166,7 @@ s72::Scene72::Ptr Engine::load(
 	scene72.minTime = std::numeric_limits<float>::max();
 	scene72.maxTime = -std::numeric_limits<float>::max();
 	// Create a default simple material
-	scene72.defaultMaterial.reset(new s72::SimpleMaterial(-1, "default material"));
+	scene72.defaultMaterial.reset(new s72::SimpleMaterial(-1U, "default material"));
 	// Load objects
 	if (json[0].string() != "s72-v1") {
 		this->destroy(scene72);
@@ -513,8 +513,8 @@ s72::Scene72::Ptr Engine::load(
 					throw std::runtime_error("Environment \"" + name + "\" failed to load radiance texture from \"" + imagePath.string() + "\".");
 				}
 				std::vector<jjyou::glsl::vec4> baseRgb; baseRgb.reserve(texWidth * texHeight);
-				for (int i = 0; i < texWidth * texHeight; ++i)
-					baseRgb.emplace_back(unpackRGBE(reinterpret_cast<jjyou::glsl::vec<unsigned char, 4>*>(pixels)[i]), 1.0f);
+				for (int j = 0; j < texWidth * texHeight; ++j)
+					baseRgb.emplace_back(unpackRGBE(reinterpret_cast<jjyou::glsl::vec<unsigned char, 4>*>(pixels)[j]), 1.0f);
 				stbi_image_free(pixels);
 				VkExtent2D extent{
 					.width = static_cast<std::uint32_t>(texWidth),
@@ -522,9 +522,9 @@ s72::Scene72::Ptr Engine::load(
 				};
 				std::vector<std::vector<jjyou::glsl::vec4>> mipRgb; mipRgb.reserve(20);
 				std::vector<void*> mipData; mipData.reserve(20);
-				for (int i = 1; ; ++i) {
+				for (int j = 1; ; ++j) {
 					imagePath = static_cast<std::string>(obj["radiance"]["src"]);
-					imagePath.replace_filename(imagePath.stem().string() + ".prefilteredenv." + std::to_string(i) + imagePath.extension().string());
+					imagePath.replace_filename(imagePath.stem().string() + ".prefilteredenv." + std::to_string(j) + imagePath.extension().string());
 					imagePath = baseDir / imagePath;
 					if (!std::filesystem::exists(imagePath))
 						break;
@@ -535,8 +535,8 @@ s72::Scene72::Ptr Engine::load(
 					}
 					mipRgb.emplace_back();
 					std::vector<jjyou::glsl::vec4>& rgb = mipRgb.back(); rgb.reserve(texWidth * texHeight);
-					for (int j = 0; j < texWidth * texHeight; ++j)
-						rgb.emplace_back(unpackRGBE(reinterpret_cast<jjyou::glsl::vec<unsigned char, 4>*>(pixels)[j]), 1.0f);
+					for (int k = 0; k < texWidth * texHeight; ++k)
+						rgb.emplace_back(unpackRGBE(reinterpret_cast<jjyou::glsl::vec<unsigned char, 4>*>(pixels)[k]), 1.0f);
 					stbi_image_free(pixels);
 					mipData.push_back(rgb.data());
 				}
@@ -553,7 +553,7 @@ s72::Scene72::Ptr Engine::load(
 					baseRgb.data(),
 					VK_FORMAT_R32G32B32A32_SFLOAT,
 					extent,
-					mipData.size() + 1,
+					static_cast<int>(mipData.size() + 1),
 					mipData,
 					true
 				);
@@ -572,8 +572,8 @@ s72::Scene72::Ptr Engine::load(
 					throw std::runtime_error("Environment \"" + name + "\" failed to load lambertian texture from \"" + imagePath.string() + "\".");
 				}
 				std::vector<jjyou::glsl::vec4>rgb; rgb.reserve(texWidth * texHeight);
-				for (int i = 0; i < texWidth * texHeight; ++i)
-					rgb.emplace_back(unpackRGBE(reinterpret_cast<jjyou::glsl::vec<unsigned char, 4>*>(pixels)[i]), 1.0f);
+				for (int j = 0; j < texWidth * texHeight; ++j)
+					rgb.emplace_back(unpackRGBE(reinterpret_cast<jjyou::glsl::vec<unsigned char, 4>*>(pixels)[j]), 1.0f);
 				VkExtent2D extent{
 					.width = static_cast<std::uint32_t>(texWidth),
 					.height = static_cast<std::uint32_t>(texHeight) / 6

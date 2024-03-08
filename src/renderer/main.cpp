@@ -13,133 +13,6 @@
 
 #include <stb/stb_image.h>
 int main(int argc, char* argv[]) {
-	/*int vertexCount = 0;
-	auto writeVertex = [&](
-		std::ostream& out,
-		float x, float y, float z,
-		float nx, float ny, float nz,
-		float tx, float ty, float tz, float tw,
-		float u, float v,
-		unsigned char r, unsigned char g, unsigned char b, unsigned char a
-		) {
-			out.write(reinterpret_cast<const char*>(&x), sizeof(float));
-			out.write(reinterpret_cast<const char*>(&y), sizeof(float));
-			out.write(reinterpret_cast<const char*>(&z), sizeof(float));
-			out.write(reinterpret_cast<const char*>(&nx), sizeof(float));
-			out.write(reinterpret_cast<const char*>(&ny), sizeof(float));
-			out.write(reinterpret_cast<const char*>(&nz), sizeof(float));
-			out.write(reinterpret_cast<const char*>(&tx), sizeof(float));
-			out.write(reinterpret_cast<const char*>(&ty), sizeof(float));
-			out.write(reinterpret_cast<const char*>(&tz), sizeof(float));
-			out.write(reinterpret_cast<const char*>(&tw), sizeof(float));
-			out.write(reinterpret_cast<const char*>(&u), sizeof(float));
-			out.write(reinterpret_cast<const char*>(&v), sizeof(float));
-			out.write(reinterpret_cast<const char*>(&r), sizeof(unsigned char));
-			out.write(reinterpret_cast<const char*>(&g), sizeof(unsigned char));
-			out.write(reinterpret_cast<const char*>(&b), sizeof(unsigned char));
-			out.write(reinterpret_cast<const char*>(&a), sizeof(unsigned char));
-			++vertexCount;
-		};
-	std::ofstream fout("sphere.b72", std::ios::out | std::ios::binary);
-	for (int thetaIdx = 0; thetaIdx < 72; ++thetaIdx) {
-		float theta = static_cast<float>(thetaIdx) / 72 * 2.0f * std::numbers::pi_v<float>;
-		float thetaNext = static_cast<float>(thetaIdx + 1) / 72 * 2.0f * std::numbers::pi_v<float>;
-		for (int phiIdx = 0; phiIdx < 36; ++phiIdx) {
-			float phi = static_cast<float>(phiIdx) / 36 * std::numbers::pi_v<float> - std::numbers::pi_v<float> / 2.0f;
-			float phiNext = static_cast<float>(phiIdx + 1) / 36 * std::numbers::pi_v<float> - std::numbers::pi_v<float> / 2.0f;
-			auto writeV0 = [&]() {
-				writeVertex(
-					fout,
-					std::cos(phi) * std::cos(theta), std::cos(phi) * std::sin(theta), std::sin(phi),
-					std::cos(phi) * std::cos(theta), std::cos(phi) * std::sin(theta), std::sin(phi),
-					-std::sin(theta), std::cos(theta), 0.0f, 1.0f,
-					static_cast<float>(thetaIdx) / 72, 1.0f - static_cast<float>(phiIdx) / 36,
-					1.0f, 1.0f, 1.0f, 1.0f
-				);
-				};
-			auto writeV1 = [&]() {
-				writeVertex(
-					fout,
-					std::cos(phi) * std::cos(thetaNext), std::cos(phi) * std::sin(thetaNext), std::sin(phi),
-					std::cos(phi) * std::cos(thetaNext), std::cos(phi) * std::sin(thetaNext), std::sin(phi),
-					-std::sin(thetaNext), std::cos(thetaNext), 0.0f, 1.0f,
-					static_cast<float>(thetaIdx + 1) / 72, 1.0f - static_cast<float>(phiIdx) / 36,
-					1.0f, 1.0f, 1.0f, 1.0f
-				);
-				};
-			auto writeV2 = [&]() {
-				writeVertex(
-					fout,
-					std::cos(phiNext) * std::cos(thetaNext), std::cos(phiNext) * std::sin(thetaNext), std::sin(phiNext),
-					std::cos(phiNext) * std::cos(thetaNext), std::cos(phiNext) * std::sin(thetaNext), std::sin(phiNext),
-					-std::sin(thetaNext), std::cos(thetaNext), 0.0f, 1.0f,
-					static_cast<float>(thetaIdx + 1) / 72, 1.0f - static_cast<float>(phiIdx + 1) / 36,
-					1.0f, 1.0f, 1.0f, 1.0f
-				);
-				};
-			auto writeV3 = [&]() {
-				writeVertex(
-					fout,
-					std::cos(phiNext) * std::cos(theta), std::cos(phiNext) * std::sin(theta), std::sin(phiNext),
-					std::cos(phiNext) * std::cos(theta), std::cos(phiNext) * std::sin(theta), std::sin(phiNext),
-					-std::sin(theta), std::cos(theta), 0.0f, 1.0f,
-					static_cast<float>(thetaIdx) / 72, 1.0f - static_cast<float>(phiIdx + 1) / 36,
-					1.0f, 1.0f, 1.0f, 1.0f
-				);
-				};
-			writeV0(); writeV1(); writeV2();
-			writeV0(); writeV2(); writeV3();
-		}
-	}
-	fout.close();
-	std::cout << "Write " << vertexCount << " vertices." << std::endl;
-	exit(0);*/
-	/*std::ofstream fout("square.b72", std::ios::out | std::ios::binary);
-	auto writeV1 = [&]() {
-		writeVertex(
-			fout,
-			-1.0f, 0.0f, -1.0f,
-			0.0f, -1.0f, 0.0f,
-			1.0f, 0.0f, 0.0f, 1.0f,
-			0.0f, 1.0f,
-			255, 255, 255, 255
-		);
-		};
-	auto writeV2 = [&]() {
-		writeVertex(
-			fout,
-			1.0f, 0.0f, -1.0f,
-			0.0f, -1.0f, 0.0f,
-			1.0f, 0.0f, 0.0f, 1.0f,
-			1.0f, 1.0f,
-			255, 255, 255, 255
-		);
-		};
-	auto writeV3 = [&]() {
-		writeVertex(
-			fout,
-			1.0f, 0.0f, 1.0f,
-			0.0f, -1.0f, 0.0f,
-			1.0f, 0.0f, 0.0f, 1.0f,
-			1.0f, 0.0f,
-			255, 255, 255, 255
-		);
-		};
-	auto writeV4 = [&]() {
-		writeVertex(
-			fout,
-			-1.0f, 0.0f, 1.0f,
-			0.0f, -1.0f, 0.0f,
-			1.0f, 0.0f, 0.0f, 1.0f,
-			0.0f, 0.0f,
-			255, 255, 255, 255
-		);
-		};
-	writeV1(); writeV2(); writeV3();
-	writeV1(); writeV3(); writeV4();
-	fout.close();
-	std::cout << "Write " << vertexCount << " vertices." << std::endl;
-	exit(0);*/
 	try {
 		// Parse arguments.
 		TinyArgParser argParser;
@@ -160,6 +33,7 @@ int main(int argc, char* argv[]) {
 				std::cout << "Device type: " << string_VkPhysicalDeviceType(physicalDevice.deviceProperties().deviceType) << std::endl;
 			}
 			std::cout << "===================================================" << std::endl;
+			instance.destroy();
 			exit(0);
 		}
 
