@@ -80,11 +80,16 @@ private:
 	struct ViewLevelUniform {
 		jjyou::glsl::mat4 projection;
 		jjyou::glsl::mat4 view;
+		jjyou::glsl::vec4 viewPos;
 	};
 
 	struct ObjectLevelUniform {
 		jjyou::glsl::mat4 model;
 		jjyou::glsl::mat4 normal;
+	};
+
+	struct SkyboxUniform {
+		jjyou::glsl::mat4 model;
 	};
 
 	struct FrameData {
@@ -180,6 +185,7 @@ public:
 
 	VkDescriptorSetLayout viewLevelUniformDescriptorSetLayout;
 	VkDescriptorSetLayout objectLevelUniformDescriptorSetLayout;
+	VkDescriptorSetLayout skyboxUniformDescriptorSetLayout;
 	VkDescriptorSetLayout mirrorMaterialLevelUniformDescriptorSetLayout;
 	VkDescriptorSetLayout environmentMaterialLevelUniformDescriptorSetLayout;
 	VkDescriptorSetLayout lambertianMaterialLevelUniformDescriptorSetLayout;
@@ -199,6 +205,9 @@ public:
 
 	VkPipelineLayout pbrPipelineLayout;
 	VkPipeline pbrPipeline;
+
+	VkPipelineLayout skyboxPipelineLayout;
+	VkPipeline skyboxPipeline;
 
 public:
 

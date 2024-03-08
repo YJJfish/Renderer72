@@ -1,0 +1,145 @@
+#version 450
+
+layout (local_size_x = 32, local_size_y = 32) in;
+layout (set = 0, binding = 0) uniform samplerCube inputImage;
+layout (set = 0, binding = 1, rgba32f) uniform image2D sumLight[6];
+layout (set = 0, binding = 2, r32f) uniform image2D sumWeight[6];
+layout (set = 0, binding = 3, rgba8) uniform image2D outputImage[6];
+layout(push_constant) uniform SampleRange {
+	ivec2 range; // Should be 0~numSamples. When range[0]=numSamples+1, pack RGBE into outputImage.
+	int numSamples;
+	float roughness;
+} sampleRange;
+
+#define PI 3.1415926535897932384626433832795
+
+// view[t] transforms a vector pointing to the +Z face to one pointing to another face
+mat3 view[6] = mat3[](
+	mat3(
+		0,  0,  -1,
+		0,  1,  0,
+		1,  0,  0
+	),
+	mat3(
+		0,  0,  1,
+		0,  1,  0,
+		-1,  0,  0
+	),
+	mat3(
+		1,  0,  0,
+		0,  0,  -1,
+		0,  1,  0
+	),
+	mat3(
+		1,  0,  0,
+		0,  0,  1,
+		0,  -1,  0
+	),
+	mat3(
+		1,  0,  0,
+		0,  1,  0,
+		0,  0,  1
+	),
+	mat3(
+		-1,  0,  0,
+		0,  1,  0,
+		0,  0,  -1
+	)
+);
+
+vec3 unpackRGBE(vec4 rgbe){
+	if (rgbe == vec4(0.0)){
+		return vec3(0.0, 0.0, 0.0);
+	}
+	else{
+		return pow(2.0, rgbe.a * 255.0 - 128.0) * (rgbe.rgb * 255.0 + 0.5) / 256.0;
+	}
+}
+
+vec4 packRGBE(vec3 color) {
+	if (color == vec3(0.0))
+		return vec4(0.0);
+	float maxCoeff = max(max(color.r, color.g), color.b);
+	int expo = int(ceil(log2(maxCoeff / (255.5 / 256.0))));
+	if (expo < -128)
+		return vec4(0.0);
+	return vec4((color / pow(2.0, expo) * 256.0 - 0.5) / 255.0, (expo + 128.0) / 255.0);
+}
+
+/* Convert a pixel coordinate to direction vector
+ * E.g. The direction vector for pixel(i, j)'s center on face t should be pixelToDirection(t, i + 0.5, j + 0.5, imageSize).
+ *		The 4 direction vectors for pixel(i, j)'s corner on face t should be
+ *			pixelToDirection(t, i + 0.0, j + 0.0, imageSize),
+ *			pixelToDirection(t, i + 0.0, j + 1.0, imageSize),
+ *			pixelToDirection(t, i + 1.0, j + 1.0, imageSize),
+ *			pixelToDirection(t, i + 1.0, j + 0.0, imageSize)
+ */
+vec3 pixelToDirection(int faceID, float x, float y, ivec2 imageSize) {
+	return view[faceID] * normalize(vec3(
+		x / float(imageSize.x) * 2.0 - 1.0,
+		1.0 - y / float(imageSize.y) * 2.0,
+		1.0
+	));
+}
+
+// Hammersley sampling
+vec2 hammersley(int i, int n, int base) {
+	vec2 ret;
+	ret.x = float(i) / float(n);
+	ret.y = 0.0;
+	int num = i;
+	float frac = 1.0;
+	while (num > 0) {
+		frac /= float(base);
+		ret.y += float(num % base) * frac;
+		num /= base;
+	}
+	return ret;
+}
+
+vec3 importanceSampleGGX(vec2 Xi, float roughness, vec3 N) {
+	float a = roughness * roughness;
+	float phi = 2.0 * PI * Xi.x;
+	float cosTheta = sqrt((1.0 - Xi.y) / (1.0 + (a * a - 1.0) * Xi.y));
+	float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+	vec3 H;
+	H.x = sinTheta * cos(phi);
+	H.y = sinTheta * sin(phi);
+	H.z = cosTheta;
+	vec3 upVector = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+	vec3 tangentX = normalize(cross(upVector, N));
+	vec3 tangentY = cross(N, tangentX);
+	return tangentX * H.x + tangentY * H.y + N * H.z;
+}
+
+// Compute shader main function
+void main() {
+	ivec2 outputImageSize = imageSize(outputImage[0]);
+	if (gl_GlobalInvocationID.x >= outputImageSize.x || gl_GlobalInvocationID.y >= outputImageSize.y * 6)
+		return;
+	int faceID = int(gl_GlobalInvocationID.y / outputImageSize.y);
+	ivec2 outputPixel = ivec2(gl_GlobalInvocationID.x, gl_GlobalInvocationID.y - faceID * outputImageSize.y);
+	vec3 normal = pixelToDirection(faceID, outputPixel.x + 0.5, outputPixel.y + 0.5, outputImageSize);
+	
+	vec3 sumL = imageLoad(sumLight[faceID], outputPixel).rgb;
+	float sumW = imageLoad(sumWeight[faceID], outputPixel).r;
+	if (sampleRange.range[0] >= sampleRange.numSamples + 1) { // Special value for final pass
+		imageStore(outputImage[faceID], outputPixel, packRGBE(sumL / sumW));
+		//imageStore(outputImage[faceID], outputPixel, vec4(sumL / sumW, 1.0));
+		return;
+	}
+	vec3 N = normal;
+	vec3 V = normal;
+	for (int i = sampleRange.range[0]; i < sampleRange.range[1]; ++i) {
+		vec2 Xi = hammersley(i, sampleRange.numSamples, 2);
+		vec3 H = importanceSampleGGX(Xi, sampleRange.roughness, N);
+		vec3 L = 2.0 * dot(V, H) * H - V;
+		float NoL = clamp(dot(N, L), 0.0, 1.0);
+		if (NoL > 0.0) {
+			sumL += texture(inputImage, L).rgb * NoL;
+			sumW += NoL;
+		}
+	}
+	imageStore(sumLight[faceID], outputPixel, vec4(sumL, 1.0));
+	imageStore(sumWeight[faceID], outputPixel, vec4(sumW));
+}

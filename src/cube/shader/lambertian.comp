@@ -1,0 +1,117 @@
+#version 450
+
+layout (local_size_x = 32, local_size_y = 32) in;
+layout (set = 0, binding = 0, rgba8) uniform readonly image2D inputImage[6];
+layout (set = 0, binding = 1, rgba32f) uniform image2D sumLight[6];
+layout (set = 0, binding = 2, r32f) uniform image2D sumWeight[6]; // Theoretically should not be used. However due to numerical error, the sum of area may not be 2*PI
+layout (set = 0, binding = 3, rgba8) uniform image2D outputImage[6];
+layout(push_constant) uniform SampleRange {
+	ivec2 fRange; // Should be 0~6. When fRange[0]=7, pack RGBE into outputImage.
+	ivec2 xRange;
+	ivec2 yRange;
+} sampleRange;
+
+#define PI 3.1415926535897932384626433832795
+
+// view[t] transforms a vector pointing to the +Z face to one pointing to another face
+mat3 view[6] = mat3[](
+	mat3(
+		0,  0,  -1,
+		0,  1,  0,
+		1,  0,  0
+	),
+	mat3(
+		0,  0,  1,
+		0,  1,  0,
+		-1,  0,  0
+	),
+	mat3(
+		1,  0,  0,
+		0,  0,  -1,
+		0,  1,  0
+	),
+	mat3(
+		1,  0,  0,
+		0,  0,  1,
+		0,  -1,  0
+	),
+	mat3(
+		1,  0,  0,
+		0,  1,  0,
+		0,  0,  1
+	),
+	mat3(
+		-1,  0,  0,
+		0,  1,  0,
+		0,  0,  -1
+	)
+);
+
+vec3 unpackRGBE(vec4 rgbe){
+	if (rgbe == vec4(0.0)){
+		return vec3(0.0, 0.0, 0.0);
+	}
+	else{
+		return pow(2.0, rgbe.a * 255.0 - 128.0) * (rgbe.rgb * 255.0 + 0.5) / 256.0;
+	}
+}
+
+vec4 packRGBE(vec3 color) {
+	if (color == vec3(0.0))
+		return vec4(0.0);
+	float maxCoeff = max(max(color.r, color.g), color.b);
+	int expo = int(ceil(log2(maxCoeff / (255.5 / 256.0))));
+	if (expo < -128)
+		return vec4(0.0);
+	return vec4((color / pow(2.0, expo) * 256.0 - 0.5) / 255.0, (expo + 128.0) / 255.0);
+}
+
+/* Convert a pixel coordinate to direction vector
+ * E.g. The direction vector for pixel(i, j)'s center on face t should be pixelToDirection(t, i + 0.5, j + 0.5, imageSize).
+ *		The 4 direction vectors for pixel(i, j)'s corner on face t should be
+ *			pixelToDirection(t, i + 0.0, j + 0.0, imageSize),
+ *			pixelToDirection(t, i + 0.0, j + 1.0, imageSize),
+ *			pixelToDirection(t, i + 1.0, j + 1.0, imageSize),
+ *			pixelToDirection(t, i + 1.0, j + 0.0, imageSize)
+ */
+vec3 pixelToDirection(int faceID, float x, float y, ivec2 imageSize) {
+	return view[faceID] * normalize(vec3(
+		x / float(imageSize.x) * 2.0 - 1.0,
+		1.0 - y / float(imageSize.y) * 2.0,
+		1.0
+	));
+}
+
+// Compute shader main function
+void main() {
+	ivec2 inputImageSize = imageSize(inputImage[0]);
+	ivec2 outputImageSize = imageSize(outputImage[0]);
+	if (gl_GlobalInvocationID.x >= outputImageSize.x || gl_GlobalInvocationID.y >= outputImageSize.y * 6)
+		return;
+	int faceID = int(gl_GlobalInvocationID.y / outputImageSize.y);
+	ivec2 outputPixel = ivec2(gl_GlobalInvocationID.x, gl_GlobalInvocationID.y - faceID * outputImageSize.y);
+	vec3 normal = pixelToDirection(faceID, outputPixel.x + 0.5, outputPixel.y + 0.5, outputImageSize);
+	
+	vec3 sumL = imageLoad(sumLight[faceID], outputPixel).rgb;
+	float sumW = imageLoad(sumWeight[faceID], outputPixel).r;
+	if (sampleRange.fRange[0] >= 7) { // Special value for final pass
+		imageStore(outputImage[faceID], outputPixel, packRGBE(sumL / sumW * 2.0 * PI));
+		return;
+	}
+	for (int _faceID = sampleRange.fRange[0]; _faceID < sampleRange.fRange[1]; ++_faceID)
+		for (int _x = sampleRange.xRange[0]; _x < sampleRange.xRange[1]; ++_x)
+			for (int _y = sampleRange.yRange[0]; _y < sampleRange.yRange[1]; ++_y) {
+				vec3 centerDir = pixelToDirection(_faceID, _x + 0.5, _y + 0.5, inputImageSize);
+				float cosTheta = dot(centerDir, normal);
+				if (cosTheta <= 0.0) continue;
+				vec3 cornerDir0 = pixelToDirection(_faceID, _x + 0.0, _y + 0.0, inputImageSize);
+				vec3 cornerDir1 = pixelToDirection(_faceID, _x + 0.0, _y + 1.0, inputImageSize);
+				vec3 cornerDir2 = pixelToDirection(_faceID, _x + 1.0, _y + 1.0, inputImageSize);
+				vec3 cornerDir3 = pixelToDirection(_faceID, _x + 1.0, _y + 0.0, inputImageSize);
+				float area = 0.5 * length(cross(cornerDir1 - cornerDir0, cornerDir2 - cornerDir0)) + 0.5 * length(cross(cornerDir2 - cornerDir0, cornerDir3 - cornerDir0));
+				sumL += area * unpackRGBE(imageLoad(inputImage[_faceID], ivec2(_x, _y))) * cosTheta;
+				sumW += area;
+			}
+	imageStore(sumLight[faceID], outputPixel, vec4(sumL, 1.0));
+	imageStore(sumWeight[faceID], outputPixel, vec4(sumW));
+}

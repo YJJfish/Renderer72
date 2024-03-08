@@ -3,6 +3,7 @@
 layout(set = 0, binding = 0) uniform ViewLevelUniform {
 	mat4 projection;
 	mat4 view;
+	vec4 viewPos;
 } viewLevelUniform;
 
 layout(set = 1, binding = 0) uniform ObjectLevelUniform {

@@ -6,6 +6,29 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
 
+inline jjyou::glsl::vec3 unpackRGBE(const jjyou::glsl::vec<unsigned char, 4>& rgbe) {
+	if (rgbe == jjyou::glsl::vec<unsigned char, 4>(0)) {
+		return jjyou::glsl::vec3(0.0f, 0.0f, 0.0f);
+	}
+	else {
+		return pow(2.0f, static_cast<float>(rgbe.a) - 128.0f) * (jjyou::glsl::vec3(rgbe.cast<float>()) + 0.5f) / 256.0f;
+	}
+}
+
+inline jjyou::glsl::vec<unsigned char, 4> packRGBE(jjyou::glsl::vec3 color) {
+	if (color == jjyou::glsl::vec3(0.0))
+		return jjyou::glsl::vec<unsigned char, 4>(0);
+	float maxCoeff = std::max(std::max(color.r, color.g), color.b);
+	int expo = int(std::ceil(std::log2(maxCoeff / (255.5f / 256.0f))));
+	if (expo < -128)
+		return jjyou::glsl::vec<unsigned char, 4>(0);
+	jjyou::glsl::vec<unsigned char, 4> ret{};
+	for (int i = 0; i < 3; ++i)
+		ret[i] = static_cast<unsigned char>(std::clamp<float>(color[i] / std::powf(2.0f, expo) * 256.0f - 0.5f, 0.0f, 255.0f));
+	ret.a = static_cast<unsigned char>(std::clamp<int>(expo + 128, 0, 255));
+	return ret;
+}
+
 template <class V>
 inline V interpolate(s72::Driver::Interpolation interpolation, float begT, float endT, float currT, const V& begV, const V& endV) {
 	if (interpolation == s72::Driver::Interpolation::Step)
@@ -36,8 +59,9 @@ static jjyou::vk::Texture2D loadTexture(
 	VkCommandPool transferCommandPool,
 	const jjyou::io::Json<>& material,
 	const std::string& textureName,
-	const std::array<unsigned char, Length>& defaultValue
-) requires (Length == 1 || Length == 3)
+	const std::array<unsigned char, Length>& defaultValue,
+	bool normalConversion// normal = texture * 2 - 1
+) requires (Length == 1 || Length == 3 || Length == 4)
 {
 	using ElementType = std::conditional_t<Length == 3, std::array<unsigned char, Length + 1>, std::array<unsigned char, Length>>;
 	jjyou::vk::Texture2D texture;
@@ -49,6 +73,7 @@ static jjyou::vk::Texture2D loadTexture(
 	case 3:
 		// Note: VK_FORMAT_R8G8B8_UNORM is usually not supported.
 		// We will use VK_FORMAT_R8G8B8A8_UNORM for 3-dimensional data.
+	case 4:
 		format = VK_FORMAT_R8G8B8A8_UNORM;
 		break;
 	default:
@@ -57,12 +82,9 @@ static jjyou::vk::Texture2D loadTexture(
 	if (material.find(textureName) == material.end()) {
 		// Texture not found. Create 1x1 texture with default value.
 		ElementType _defaultValue{};
-		if (Length == 1) {
-			_defaultValue[0] = defaultValue[0];
-		}
-		else {
-			for (int i = 0; i < Length; ++i)
-				_defaultValue[i] = defaultValue[i];
+		for (int i = 0; i < Length; ++i)
+			_defaultValue[i] = defaultValue[i];
+		if (Length == 3) {
 			_defaultValue[3] = 255;
 		}
 		texture.create(
@@ -71,7 +93,7 @@ static jjyou::vk::Texture2D loadTexture(
 			allocator,
 			graphicsCommandPool,
 			transferCommandPool,
-			&_defaultValue,
+			_defaultValue.data(),
 			format,
 			VkExtent2D{ .width = 1,.height = 1 }
 		);
@@ -82,12 +104,20 @@ static jjyou::vk::Texture2D loadTexture(
 			// Constant value.
 			ElementType constantValue{};
 			if (Length == 1) {
-				constantValue[0] = jjyou::utils::color_cast<unsigned char>(static_cast<float>(material[textureName]));
+				if (!normalConversion)
+					constantValue[0] = jjyou::utils::color_cast<unsigned char>(static_cast<float>(material[textureName]));
+				else
+					constantValue[0] = jjyou::utils::color_cast<unsigned char>(static_cast<float>(material[textureName]) / 2.0 + 0.5);
 			}
 			else {
-				for (int i = 0; i < Length; ++i)
-					constantValue[i] = jjyou::utils::color_cast<unsigned char>(static_cast<float>(material[textureName][i]));
-				constantValue[3] = 255;
+				if (!normalConversion)
+					for (int i = 0; i < Length; ++i)
+						constantValue[i] = jjyou::utils::color_cast<unsigned char>(static_cast<float>(material[textureName][i]));
+				else
+					for (int i = 0; i < Length; ++i)
+						constantValue[i] = jjyou::utils::color_cast<unsigned char>(static_cast<float>(material[textureName][i]) / 2.0 + 0.5);
+				if (Length == 3)
+					constantValue[3] = 255;
 			}
 			texture.create(
 				physicalDevice,
@@ -95,7 +125,7 @@ static jjyou::vk::Texture2D loadTexture(
 				allocator,
 				graphicsCommandPool,
 				transferCommandPool,
-				&constantValue,
+				constantValue.data(),
 				format,
 				VkExtent2D{ .width = 1,.height = 1 }
 			);
@@ -107,6 +137,10 @@ static jjyou::vk::Texture2D loadTexture(
 			if (pixels == nullptr) {
 				return {};
 			}
+			VkExtent2D extent{
+				.width = static_cast<std::uint32_t>(texWidth),
+				.height = static_cast<std::uint32_t>(texHeight)
+			};
 			texture.create(
 				physicalDevice,
 				device,
@@ -115,7 +149,7 @@ static jjyou::vk::Texture2D loadTexture(
 				transferCommandPool,
 				pixels,
 				format,
-				VkExtent2D{.width = static_cast<std::uint32_t>(texWidth), .height = static_cast<std::uint32_t>(texHeight) }
+				extent
 			);
 			stbi_image_free(pixels);
 		}
@@ -315,7 +349,8 @@ s72::Scene72::Ptr Engine::load(
 					this->transferCommandPool,
 					obj,
 					"normalMap",
-					std::array<unsigned char, 3>{{0, 0, 255}}
+					std::array<unsigned char, 3>{{127, 127, 255}},
+					true
 				);
 				if (!normalMap.has_value()) {
 					this->destroy(scene72);
@@ -330,9 +365,11 @@ s72::Scene72::Ptr Engine::load(
 					this->transferCommandPool,
 					obj,
 					"displacementMap",
-					std::array<unsigned char, 1>{{0}}
+					std::array<unsigned char, 1>{{0}},
+					false
 				);
 				if (!displacementMap.has_value()) {
+					normalMap.destroy();
 					this->destroy(scene72);
 					throw std::runtime_error("Material \"" + name + "\" failed to create displacement map texture.");
 				}
@@ -353,7 +390,7 @@ s72::Scene72::Ptr Engine::load(
 					));
 				}
 				else if (obj.find("lambertian") != obj.end()) {
-					jjyou::vk::Texture2D baseColor = loadTexture(
+					jjyou::vk::Texture2D albedo = loadTexture(
 						baseDir,
 						this->physicalDevice,
 						this->device,
@@ -361,10 +398,13 @@ s72::Scene72::Ptr Engine::load(
 						this->graphicsCommandPool,
 						this->transferCommandPool,
 						obj["lambertian"],
-						"baseColor",
-						std::array<unsigned char, 3>{{255, 255, 255}}
+						"albedo",
+						std::array<unsigned char, 3>{{255, 255, 255}},
+						false
 					);
-					if (!baseColor.has_value()) {
+					if (!albedo.has_value()) {
+						normalMap.destroy();
+						displacementMap.destroy();
 						this->destroy(scene72);
 						throw std::runtime_error("Material \"" + name + "\" failed to create base color texture.");
 					}
@@ -373,7 +413,7 @@ s72::Scene72::Ptr Engine::load(
 						name,
 						normalMap,
 						displacementMap,
-						baseColor
+						albedo
 					));
 				}
 				else if (obj.find("pbr") != obj.end()) {
@@ -386,9 +426,12 @@ s72::Scene72::Ptr Engine::load(
 						this->transferCommandPool,
 						obj["pbr"],
 						"albedo",
-						std::array<unsigned char, 3>{{255, 255, 255}}
+						std::array<unsigned char, 3>{{255, 255, 255}},
+						false
 					);
 					if (!albedo.has_value()) {
+						normalMap.destroy();
+						displacementMap.destroy();
 						this->destroy(scene72);
 						throw std::runtime_error("Material \"" + name + "\" failed to create albedo texture.");
 					}
@@ -401,9 +444,13 @@ s72::Scene72::Ptr Engine::load(
 						this->transferCommandPool,
 						obj["pbr"],
 						"roughness",
-						std::array<unsigned char, 1>{{255}}
+						std::array<unsigned char, 1>{{255}},
+						false
 					);
 					if (!roughness.has_value()) {
+						normalMap.destroy();
+						displacementMap.destroy();
+						albedo.destroy();
 						this->destroy(scene72);
 						throw std::runtime_error("Material \"" + name + "\" failed to create roughness texture.");
 					}
@@ -416,9 +463,14 @@ s72::Scene72::Ptr Engine::load(
 						this->transferCommandPool,
 						obj["pbr"],
 						"metalness",
-						std::array<unsigned char, 1>{{0}}
+						std::array<unsigned char, 1>{{0}},
+						false
 					);
 					if (!metalness.has_value()) {
+						normalMap.destroy();
+						displacementMap.destroy();
+						albedo.destroy();
+						roughness.destroy();
 						this->destroy(scene72);
 						throw std::runtime_error("Material \"" + name + "\" failed to create metalness texture.");
 					}
@@ -432,6 +484,12 @@ s72::Scene72::Ptr Engine::load(
 						metalness
 					));
 				}
+				else {
+					normalMap.destroy();
+					displacementMap.destroy();
+					this->destroy(scene72);
+					throw std::runtime_error("Material \"" + name + "\" must have exactly one of these properties: \"simple\", \"mirror\", \"environment\", \"lambertian\", or \"pbr\".");
+				}
 			}
 			scene72.graph.push_back(material);
 		}
@@ -440,12 +498,142 @@ s72::Scene72::Ptr Engine::load(
 				this->destroy(scene72);
 				throw std::runtime_error("Find multiple environments.");
 			}
+			// Load radiance map
+			jjyou::vk::Texture2D radiance;
+			{
+				if (obj.find("radiance") == obj.end()) {
+					this->destroy(scene72);
+					throw std::runtime_error("Environment \"" + name + "\" must have a \"radiance\" property to specify the path to the radiance texture.");
+				}
+				int texWidth, texHeight, texChannels;
+				std::filesystem::path imagePath = baseDir / static_cast<std::string>(obj["radiance"]["src"]);
+				stbi_uc* pixels = stbi_load(imagePath.string().c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+				if (pixels == nullptr) {
+					this->destroy(scene72);
+					throw std::runtime_error("Environment \"" + name + "\" failed to load radiance texture from \"" + imagePath.string() + "\".");
+				}
+				std::vector<jjyou::glsl::vec4> baseRgb; baseRgb.reserve(texWidth * texHeight);
+				for (int i = 0; i < texWidth * texHeight; ++i)
+					baseRgb.emplace_back(unpackRGBE(reinterpret_cast<jjyou::glsl::vec<unsigned char, 4>*>(pixels)[i]), 1.0f);
+				stbi_image_free(pixels);
+				VkExtent2D extent{
+					.width = static_cast<std::uint32_t>(texWidth),
+					.height = static_cast<std::uint32_t>(texHeight) / 6
+				};
+				std::vector<std::vector<jjyou::glsl::vec4>> mipRgb; mipRgb.reserve(20);
+				std::vector<void*> mipData; mipData.reserve(20);
+				for (int i = 1; ; ++i) {
+					imagePath = static_cast<std::string>(obj["radiance"]["src"]);
+					imagePath.replace_filename(imagePath.stem().string() + ".prefilteredenv." + std::to_string(i) + imagePath.extension().string());
+					imagePath = baseDir / imagePath;
+					if (!std::filesystem::exists(imagePath))
+						break;
+					pixels = stbi_load(imagePath.string().c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+					if (pixels == nullptr) {
+						this->destroy(scene72);
+						throw std::runtime_error("Environment \"" + name + "\" failed to load pre-filtered environment texture from \"" + imagePath.string() + "\".");
+					}
+					mipRgb.emplace_back();
+					std::vector<jjyou::glsl::vec4>& rgb = mipRgb.back(); rgb.reserve(texWidth * texHeight);
+					for (int j = 0; j < texWidth * texHeight; ++j)
+						rgb.emplace_back(unpackRGBE(reinterpret_cast<jjyou::glsl::vec<unsigned char, 4>*>(pixels)[j]), 1.0f);
+					stbi_image_free(pixels);
+					mipData.push_back(rgb.data());
+				}
+				if (mipData.size() == 0) {
+					this->destroy(scene72);
+					throw std::runtime_error("Environment \"" + name + "\" failed to load any pre-filtered environment texture.");
+				}
+				radiance.create(
+					this->physicalDevice,
+					this->device,
+					this->allocator,
+					this->graphicsCommandPool,
+					this->transferCommandPool,
+					baseRgb.data(),
+					VK_FORMAT_R32G32B32A32_SFLOAT,
+					extent,
+					mipData.size() + 1,
+					mipData,
+					true
+				);
+			}
+			// Load lambertian map
+			jjyou::vk::Texture2D lambertian;
+			{
+				int texWidth, texHeight, texChannels;
+				std::filesystem::path imagePath = static_cast<std::string>(obj["radiance"]["src"]);
+				imagePath.replace_filename(imagePath.stem().string() + ".lambertian" + imagePath.extension().string());
+				imagePath = baseDir / imagePath;
+				stbi_uc* pixels = stbi_load(imagePath.string().c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+				if (pixels == nullptr) {
+					radiance.destroy();
+					this->destroy(scene72);
+					throw std::runtime_error("Environment \"" + name + "\" failed to load lambertian texture from \"" + imagePath.string() + "\".");
+				}
+				std::vector<jjyou::glsl::vec4>rgb; rgb.reserve(texWidth * texHeight);
+				for (int i = 0; i < texWidth * texHeight; ++i)
+					rgb.emplace_back(unpackRGBE(reinterpret_cast<jjyou::glsl::vec<unsigned char, 4>*>(pixels)[i]), 1.0f);
+				VkExtent2D extent{
+					.width = static_cast<std::uint32_t>(texWidth),
+					.height = static_cast<std::uint32_t>(texHeight) / 6
+				};
+				lambertian.create(
+					this->physicalDevice,
+					this->device,
+					this->allocator,
+					this->graphicsCommandPool,
+					this->transferCommandPool,
+					rgb.data(),
+					VK_FORMAT_R32G32B32A32_SFLOAT,
+					extent,
+					1,
+					{},
+					true
+				);
+				stbi_image_free(pixels);
+			}
+			// Load environment BRDF map
+			jjyou::vk::Texture2D environmentBRDF;
+			{
+				std::uint32_t height;
+				std::filesystem::path imagePath = "envbrdf.bin";
+				imagePath = baseDir / imagePath;
+				std::ifstream fin(imagePath, std::ios::in | std::ios::binary);
+				if (!fin.is_open()) {
+					radiance.destroy();
+					lambertian.destroy();
+					this->destroy(scene72);
+					throw std::runtime_error("Environment \"" + name + "\" failed to load environment BRDF lookup table from \"" + imagePath.string() + "\".");
+				}
+				fin.read(reinterpret_cast<char*>(&height), sizeof(height));
+				std::vector<float> data(height * height * 2);
+				fin.read(reinterpret_cast<char*>(data.data()), height * height * sizeof(float) * 2);
+				VkExtent2D extent{
+					.width = height,
+					.height = height
+				};
+				environmentBRDF.create(
+					this->physicalDevice,
+					this->device,
+					this->allocator,
+					this->graphicsCommandPool,
+					this->transferCommandPool,
+					data.data(),
+					VK_FORMAT_R32G32_SFLOAT,
+					extent,
+					1,
+					{},
+					false,
+					VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
+				);
+			}
 			s72::Environment::Ptr environment(new s72::Environment(
 				static_cast<std::uint32_t>(scene72.graph.size() + 1),
 				name,
-				nullptr,
-				nullptr,
-				{}
+				radiance,
+				lambertian,
+				environmentBRDF
 			));
 			scene72.environment = environment;
 			scene72.graph.push_back(environment);
@@ -491,12 +679,13 @@ s72::Scene72::Ptr Engine::load(
 			}
 			if (obj.find("children") != obj.end()) {
 				const auto& children = obj["children"];
-				for (const auto& childIdx : children) {
-					if (static_cast<int>(childIdx) <= 0 || static_cast<int>(childIdx) > scene72.graph.size() || scene72.graph[static_cast<int>(childIdx) - 1]->type != "NODE") {
+				for (const auto& childId : children) {
+					int childIdx(childId);
+					if (childIdx <= 0 || childIdx > scene72.graph.size() || scene72.graph[childIdx - 1]->type != "NODE") {
 						this->destroy(scene72);
-						throw std::runtime_error("Node" + std::to_string(node->idx) + "\'s children reference " + std::to_string(static_cast<int>(childIdx)) + " whose type is not node.");
+						throw std::runtime_error("Node" + std::to_string(node->idx) + "\'s children reference " + std::to_string(childIdx) + " whose type is not node.");
 					}
-					node->children.push_back(std::reinterpret_pointer_cast<s72::Node>(scene72.graph[static_cast<int>(childIdx) - 1]));
+					node->children.push_back(std::reinterpret_pointer_cast<s72::Node>(scene72.graph[childIdx - 1]));
 				}
 			}
 			if (obj.find("environment") != obj.end()) {
@@ -567,6 +756,10 @@ s72::Scene72::Ptr Engine::load(
 				++numPbrMaterials;
 		}
 	}
+	if ((numMirrorMaterials || numEnvironmentMaterials || numLambertianMaterials || numPbrMaterials) && !scene72.environment) {
+		this->destroy(scene72);
+		throw std::runtime_error("The scene has non simple materials, but does not have an environment object.");
+	}
 	std::uint32_t numInstances = 0;
 	scene72.traverse(
 		scene72.minTime,
@@ -582,15 +775,23 @@ s72::Scene72::Ptr Engine::load(
 	{
 		VkDescriptorPoolSize uniformBufferPoolSize{
 			.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT
+			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT * (1 + 3) // 1 for projection&view, 3 for skybox model (radiance/lambertian/pbr)
 		};
 		VkDescriptorPoolSize uniformBufferDynamicPoolSize{
 			.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT
+			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT * (1) // 1 for model
 		};
 		VkDescriptorPoolSize uniformSamplerPoolSize{
 			.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT * (numMirrorMaterials * 2 + numEnvironmentMaterials * 2 + numLambertianMaterials * 3 + numPbrMaterials * 5)
+			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT * (
+				numMirrorMaterials * 2 + // 2 for normal&displacement sampler
+				numEnvironmentMaterials * 2 + // 2 for normal&displacement sampler
+				numLambertianMaterials * 3 + // 3 for normal&displacement&albedo sampler
+				numPbrMaterials * 5 + // 5 for normal&displacement&albedo&roughness&metalness sampler
+				1 + // 1 for skybox radiance sampler
+				1 + // 1 for skybox lambertian sampler
+				1 // 1 for environment BRDF sampler
+				)
 		};
 		std::vector<VkDescriptorPoolSize> poolSizes = { uniformBufferPoolSize, uniformBufferDynamicPoolSize };
 		if (uniformSamplerPoolSize.descriptorCount > 0)
@@ -599,7 +800,15 @@ s72::Scene72::Ptr Engine::load(
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
 			.pNext = nullptr,
 			.flags = 0,
-			.maxSets = static_cast<uint32_t>(Engine::MAX_FRAMES_IN_FLIGHT * (1 + 1 + numMirrorMaterials + numEnvironmentMaterials + numLambertianMaterials + numPbrMaterials)),
+			.maxSets = static_cast<uint32_t>(Engine::MAX_FRAMES_IN_FLIGHT * (
+				1 + // 1 for view level uniform
+				1 + // 1 for model level uniform
+				numMirrorMaterials +
+				numEnvironmentMaterials +
+				numLambertianMaterials +
+				numPbrMaterials +
+				1 // 1 for skybox uniform
+				)),
 			.poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
 			.pPoolSizes = poolSizes.data()
 		};
@@ -705,12 +914,118 @@ s72::Scene72::Ptr Engine::load(
 			vkUpdateDescriptorSets(this->device.get(), static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 		}
 	}
+	// Create skybox uniform buffer
+	if (scene72.environment) {
+		VkDeviceSize bufferSize = sizeof(Engine::SkyboxUniform);
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			std::tie(scene72.frameDescriptorSets[i].skyboxUniformBuffer, scene72.frameDescriptorSets[i].skyboxUniformBufferMemory) =
+				this->createBuffer(
+					bufferSize,
+					VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+					{ *this->physicalDevice.graphicsQueueFamily() },
+					VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+				);
+			this->allocator.map(scene72.frameDescriptorSets[i].skyboxUniformBufferMemory);
+		}
+	}
+	// Create skybox uniform descriptor sets
+	if (scene72.environment) {
+		std::vector<VkDescriptorSetLayout> layouts(Engine::MAX_FRAMES_IN_FLIGHT, this->skyboxUniformDescriptorSetLayout);
+		VkDescriptorSetAllocateInfo allocInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+			.pNext = nullptr,
+			.descriptorPool = scene72.descriptorPool,
+			.descriptorSetCount = static_cast<uint32_t>(layouts.size()),
+			.pSetLayouts = layouts.data()
+		};
+		std::array<VkDescriptorSet, Engine::MAX_FRAMES_IN_FLIGHT> skyboxUniformDescriptorSets;
+		JJYOU_VK_UTILS_CHECK(vkAllocateDescriptorSets(this->device.get(), &allocInfo, skyboxUniformDescriptorSets.data()));
+		for (size_t i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; i++) {
+			scene72.frameDescriptorSets[i].skyboxUniformDescriptorSet = skyboxUniformDescriptorSets[i];
+		}
+		for (size_t i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; i++) {
+			VkDescriptorBufferInfo bufferInfo{
+				.buffer = scene72.frameDescriptorSets[i].skyboxUniformBuffer,
+				.offset = 0,
+				.range = sizeof(Engine::SkyboxUniform)
+			};
+			VkDescriptorImageInfo radianceImageInfo{
+				.sampler = scene72.environment->radiance.sampler(),
+				.imageView = scene72.environment->radiance.imageView(),
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			};
+			VkDescriptorImageInfo lambertianImageInfo{
+				.sampler = scene72.environment->lambertian.sampler(),
+				.imageView = scene72.environment->lambertian.imageView(),
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			};
+			VkDescriptorImageInfo environmentBRDFImageInfo{
+				.sampler = scene72.environment->environmentBRDF.sampler(),
+				.imageView = scene72.environment->environmentBRDF.imageView(),
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			};
+			std::vector<VkWriteDescriptorSet> descriptorWrites = {
+				VkWriteDescriptorSet{
+					.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+					.pNext = nullptr,
+					.dstSet = scene72.frameDescriptorSets[i].skyboxUniformDescriptorSet,
+					.dstBinding = 0,
+					.dstArrayElement = 0,
+					.descriptorCount = 1,
+					.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+					.pImageInfo = nullptr,
+					.pBufferInfo = &bufferInfo,
+					.pTexelBufferView = nullptr
+				},
+				VkWriteDescriptorSet{
+					.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+					.pNext = nullptr,
+					.dstSet = scene72.frameDescriptorSets[i].skyboxUniformDescriptorSet,
+					.dstBinding = 1,
+					.dstArrayElement = 0,
+					.descriptorCount = 1,
+					.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+					.pImageInfo = &radianceImageInfo,
+					.pBufferInfo = nullptr,
+					.pTexelBufferView = nullptr
+				},
+				VkWriteDescriptorSet{
+					.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+					.pNext = nullptr,
+					.dstSet = scene72.frameDescriptorSets[i].skyboxUniformDescriptorSet,
+					.dstBinding = 2,
+					.dstArrayElement = 0,
+					.descriptorCount = 1,
+					.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+					.pImageInfo = &lambertianImageInfo,
+					.pBufferInfo = nullptr,
+					.pTexelBufferView = nullptr
+				},
+				VkWriteDescriptorSet{
+					.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+					.pNext = nullptr,
+					.dstSet = scene72.frameDescriptorSets[i].skyboxUniformDescriptorSet,
+					.dstBinding = 3,
+					.dstArrayElement = 0,
+					.descriptorCount = 1,
+					.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+					.pImageInfo = &environmentBRDFImageInfo,
+					.pBufferInfo = nullptr,
+					.pTexelBufferView = nullptr
+				},
+			};
+			vkUpdateDescriptorSets(this->device.get(), static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+		}
+	}
 	// Create material level descriptor sets
 	{
 		for (const auto& object : scene72.graph) {
 			if (object->type == "MATERIAL") {
 				s72::Material::Ptr material = std::reinterpret_pointer_cast<s72::Material>(object);
 				std::vector<VkDescriptorSetLayout> layouts;
+				if (material->materialType == "simple") {
+					continue;
+				}
 				if (material->materialType == "mirror") {
 					layouts.resize(Engine::MAX_FRAMES_IN_FLIGHT, this->mirrorMaterialLevelUniformDescriptorSetLayout);
 				}
@@ -771,17 +1086,6 @@ s72::Scene72::Ptr Engine::load(
 
 void Engine::destroy(s72::Scene72& scene72) {
 	vkDeviceWaitIdle(this->device.get());
-	// Destroy uniform buffers
-	for (int i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; ++i) {
-		this->allocator.unmap(scene72.frameDescriptorSets[i].viewLevelUniformBufferMemory);
-		vkDestroyBuffer(this->device.get(), scene72.frameDescriptorSets[i].viewLevelUniformBuffer, nullptr);
-		this->allocator.free(scene72.frameDescriptorSets[i].viewLevelUniformBufferMemory);
-		this->allocator.unmap(scene72.frameDescriptorSets[i].objectLevelUniformBufferMemory);
-		vkDestroyBuffer(this->device.get(), scene72.frameDescriptorSets[i].objectLevelUniformBuffer, nullptr);
-		this->allocator.free(scene72.frameDescriptorSets[i].objectLevelUniformBufferMemory);
-	}
-	// Destroy descriptor pool
-	vkDestroyDescriptorPool(this->device.get(), scene72.descriptorPool, nullptr);
 	// Destroy vertex buffer and textures
 	for (const auto& object : scene72.graph) {
 		if (object->type == "MESH") {
@@ -796,10 +1100,39 @@ void Engine::destroy(s72::Scene72& scene72) {
 				material->texture(i).destroy();
 		}
 		else if (object->type == "ENVIRONMENT") {
-
+			s72::Environment::Ptr environment = std::reinterpret_pointer_cast<s72::Environment>(object);
+			for (std::uint32_t i = 0; i < environment->numTextures(); ++i)
+				environment->texture(i).destroy();
 		}
 	}
-	scene72.clear();
+	scene72.cameras.clear();
+	scene72.meshes.clear();
+	scene72.drivers.clear();
+	scene72.scene.reset();
+	bool hasEnvironment = (scene72.environment != nullptr);
+	scene72.environment.reset();
+	scene72.defaultMaterial.reset();
+	scene72.graph.clear();
+	scene72.currPlayTime = scene72.minTime = scene72.maxTime = 0.0f;
+	if (scene72.descriptorPool == nullptr)
+		return;
+	// Destroy uniform buffers
+	for (int i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; ++i) {
+		this->allocator.unmap(scene72.frameDescriptorSets[i].viewLevelUniformBufferMemory);
+		vkDestroyBuffer(this->device.get(), scene72.frameDescriptorSets[i].viewLevelUniformBuffer, nullptr);
+		this->allocator.free(scene72.frameDescriptorSets[i].viewLevelUniformBufferMemory);
+		this->allocator.unmap(scene72.frameDescriptorSets[i].objectLevelUniformBufferMemory);
+		vkDestroyBuffer(this->device.get(), scene72.frameDescriptorSets[i].objectLevelUniformBuffer, nullptr);
+		this->allocator.free(scene72.frameDescriptorSets[i].objectLevelUniformBufferMemory);
+		if (hasEnvironment) {
+			this->allocator.unmap(scene72.frameDescriptorSets[i].skyboxUniformBufferMemory);
+			vkDestroyBuffer(this->device.get(), scene72.frameDescriptorSets[i].skyboxUniformBuffer, nullptr);
+			this->allocator.free(scene72.frameDescriptorSets[i].skyboxUniformBufferMemory);
+		}
+	}
+	// Destroy descriptor pool
+	vkDestroyDescriptorPool(this->device.get(), scene72.descriptorPool, nullptr);
+	scene72.descriptorPool = nullptr;
 }
 
 bool s72::Scene72::traverse(

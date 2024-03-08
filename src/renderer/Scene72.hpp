@@ -173,15 +173,15 @@ namespace s72 {
 			const std::string& name,
 			jjyou::vk::Texture2D normalMap,
 			jjyou::vk::Texture2D displacementMap,
-			jjyou::vk::Texture2D baseColor
-		) : Material(idx, name, "lambertian"), normalMap(normalMap), displacementMap(displacementMap), baseColor(baseColor) {}
+			jjyou::vk::Texture2D albedo
+		) : Material(idx, name, "lambertian"), normalMap(normalMap), displacementMap(displacementMap), albedo(albedo) {}
 		virtual ~LambertianMaterial(void) override {}
 		virtual std::uint32_t numTextures(void) const override { return 3; }
-		virtual const jjyou::vk::Texture2D& texture(std::uint32_t idx) const override { switch (idx) { case 0:return this->normalMap; case 1:return this->displacementMap; case 2: return this->baseColor; default: throw std::runtime_error("Lambertian material has exactly 3 textures."); } }
-		virtual jjyou::vk::Texture2D& texture(std::uint32_t idx) override { switch (idx) { case 0:return this->normalMap; case 1:return this->displacementMap; case 2: return this->baseColor; default: throw std::runtime_error("Lambertian material has exactly 3 textures."); } }
+		virtual const jjyou::vk::Texture2D& texture(std::uint32_t idx) const override { switch (idx) { case 0:return this->normalMap; case 1:return this->displacementMap; case 2: return this->albedo; default: throw std::runtime_error("Lambertian material has exactly 3 textures."); } }
+		virtual jjyou::vk::Texture2D& texture(std::uint32_t idx) override { switch (idx) { case 0:return this->normalMap; case 1:return this->displacementMap; case 2: return this->albedo; default: throw std::runtime_error("Lambertian material has exactly 3 textures."); } }
 		jjyou::vk::Texture2D normalMap;
 		jjyou::vk::Texture2D displacementMap;
-		jjyou::vk::Texture2D baseColor;
+		jjyou::vk::Texture2D albedo;
 	};
 
 	class PbrMaterial : public Material {
@@ -215,14 +215,17 @@ namespace s72 {
 		Environment(
 			std::uint32_t idx,
 			const std::string& name,
-			VkImage radiance,
-			VkImageView radianceImageView,
-			jjyou::vk::Memory radianceMemory
-		) : Object(idx, "ENVIRONMENT", name), radiance(radiance), radianceImageView(radianceImageView), radianceMemory(radianceMemory) {}
+			jjyou::vk::Texture2D radiance,
+			jjyou::vk::Texture2D lambertian,
+			jjyou::vk::Texture2D environmentBRDF
+		) : Object(idx, "ENVIRONMENT", name), radiance(radiance), lambertian(lambertian), environmentBRDF(environmentBRDF){}
 		virtual ~Environment(void) override {}
-		VkImage radiance;
-		VkImageView radianceImageView;
-		jjyou::vk::Memory radianceMemory;
+		virtual std::uint32_t numTextures(void) const { return 3; }
+		virtual const jjyou::vk::Texture2D& texture(std::uint32_t idx) const { switch (idx) { case 0:return this->radiance; case 1:return this->lambertian; case 2:return this->environmentBRDF; default: throw std::runtime_error("Environment has exactly 3 textures."); } }
+		virtual jjyou::vk::Texture2D& texture(std::uint32_t idx) { switch (idx) { case 0:return this->radiance; case 1:return this->lambertian; case 2:return this->environmentBRDF; default: throw std::runtime_error("Environment has exactly 3 textures."); } }
+		jjyou::vk::Texture2D radiance;
+		jjyou::vk::Texture2D lambertian;
+		jjyou::vk::Texture2D environmentBRDF;
 	};
 
 	class Mesh : public Object {
@@ -286,7 +289,7 @@ namespace s72 {
 			std::uint32_t idx,
 			const std::string& name,
 			const std::vector<Node::WeakPtr>& roots
-		) : Object(idx, "NODE", name), roots(roots) {}
+		) : Object(idx, "SCENE", name), roots(roots) {}
 		virtual ~Scene(void) override {}
 	};
 	
@@ -339,16 +342,7 @@ namespace s72 {
 		std::vector<Object::Ptr> graph;
 		float minTime = 0.0f;
 		float maxTime = 0.0f;
-		// Clear all stored information.
-		// Note: you have to manually destroy the vertex buffers and memories
-		void clear(void) {
-			this->cameras.clear();
-			this->meshes.clear();
-			this->drivers.clear();
-			this->scene.reset();
-			this->graph.clear();
-			this->minTime = this->maxTime = 0.0f;
-		}
+
 		// Reset timestamp related variables
 		void reset(void) {
 			for (auto& driver : this->drivers) {
@@ -375,9 +369,13 @@ namespace s72 {
 			jjyou::vk::Memory objectLevelUniformBufferMemory{};
 
 			std::map<std::uint32_t, VkDescriptorSet> materialLevelUniformDescriptorSets{};
+
+			VkBuffer skyboxUniformBuffer = nullptr;
+			jjyou::vk::Memory skyboxUniformBufferMemory{};
+			VkDescriptorSet skyboxUniformDescriptorSet = nullptr;
 		};
-		std::array<FrameDescriptorSets, Engine::MAX_FRAMES_IN_FLIGHT> frameDescriptorSets;
-		VkDescriptorPool descriptorPool;
+		std::array<FrameDescriptorSets, Engine::MAX_FRAMES_IN_FLIGHT> frameDescriptorSets{};
+		VkDescriptorPool descriptorPool = nullptr;
 		
 
 	private:
