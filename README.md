@@ -1,5 +1,5 @@
 # Renderer72
-Course Project of CMU 15-672 (Real-Time Graphics).
+A real-time renderer based on Vulkan.
 
 ### v1.0
 
