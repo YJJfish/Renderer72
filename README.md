@@ -15,6 +15,4 @@ Frustum culling:
 
 ### v2.0
 
-<video width="600" autoplay loop muted>
-  <source src="./images/v2.0-tone-mapping.mp4" type="video/mp4">
-</video>
+<video src="./images/v2.0-tone-mapping.mp4" autoplay loop muted />
