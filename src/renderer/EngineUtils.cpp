@@ -26,7 +26,7 @@ VkImageView Engine::createImageView(
 		}
 	};
 	VkImageView imageView;
-	JJYOU_VK_UTILS_CHECK(vkCreateImageView(this->device.get(), &viewInfo, nullptr, &imageView));
+	JJYOU_VK_UTILS_CHECK(vkCreateImageView(*this->context.device(), &viewInfo, nullptr, &imageView));
 	return imageView;
 }
 
@@ -62,19 +62,19 @@ std::pair<VkImage, jjyou::vk::Memory> Engine::createImage(
 		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
 	};
 	VkImage image;
-	JJYOU_VK_UTILS_CHECK(vkCreateImage(this->device.get(), &imageInfo, nullptr, &image));
+	JJYOU_VK_UTILS_CHECK(vkCreateImage(*this->context.device(), &imageInfo, nullptr, &image));
 	VkMemoryRequirements memRequirements;
-	vkGetImageMemoryRequirements(this->device.get(), image, &memRequirements);
+	vkGetImageMemoryRequirements(*this->context.device(), image, &memRequirements);
 	VkMemoryAllocateInfo allocInfo{
 		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 		.pNext = nullptr,
 		.allocationSize = memRequirements.size,
-		.memoryTypeIndex = this->physicalDevice.findMemoryType(memRequirements.memoryTypeBits, properties).value()
+		.memoryTypeIndex = this->context.findMemoryType(memRequirements.memoryTypeBits, static_cast<vk::MemoryPropertyFlags>(properties)).value()
 	};
 	jjyou::vk::Memory imageMemory;
 	JJYOU_VK_UTILS_CHECK(this->allocator.allocate(&allocInfo, imageMemory));
-	vkBindImageMemory(this->device.get(), image, imageMemory.memory(), imageMemory.offset());
-	return std::make_pair(image, imageMemory);
+	vkBindImageMemory(*this->context.device(), image, imageMemory.memory(), imageMemory.offset());
+	return std::make_pair(image, std::move(imageMemory));
 }
 
 std::pair<VkBuffer, jjyou::vk::Memory> Engine::createBuffer(
@@ -95,19 +95,19 @@ std::pair<VkBuffer, jjyou::vk::Memory> Engine::createBuffer(
 		.pQueueFamilyIndices = _queueFamilyIndices.data()
 	};
 	VkBuffer buffer;
-	JJYOU_VK_UTILS_CHECK(vkCreateBuffer(this->device.get(), &bufferInfo, nullptr, &buffer));
+	JJYOU_VK_UTILS_CHECK(vkCreateBuffer(*this->context.device(), &bufferInfo, nullptr, &buffer));
 	VkMemoryRequirements memRequirements;
-	vkGetBufferMemoryRequirements(this->device.get(), buffer, &memRequirements);
+	vkGetBufferMemoryRequirements(*this->context.device(), buffer, &memRequirements);
 	VkMemoryAllocateInfo allocInfo{
 		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 		.pNext = nullptr,
 		.allocationSize = memRequirements.size,
-		.memoryTypeIndex = this->physicalDevice.findMemoryType(memRequirements.memoryTypeBits, properties).value()
+		.memoryTypeIndex = this->context.findMemoryType(memRequirements.memoryTypeBits, static_cast<vk::MemoryPropertyFlags>(properties)).value()
 	};
 	jjyou::vk::Memory bufferMemory;
 	JJYOU_VK_UTILS_CHECK(this->allocator.allocate(&allocInfo, bufferMemory));
-	vkBindBufferMemory(this->device.get(), buffer, bufferMemory.memory(), bufferMemory.offset());
-	return std::make_pair(buffer, bufferMemory);
+	vkBindBufferMemory(*this->context.device(), buffer, bufferMemory.memory(), bufferMemory.offset());
+	return std::make_pair(buffer, std::move(bufferMemory));
 }
 
 void Engine::copyBuffer(
@@ -123,7 +123,7 @@ void Engine::copyBuffer(
 		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
 		.commandBufferCount = 1,
 	};
-	JJYOU_VK_UTILS_CHECK(vkAllocateCommandBuffers(this->device.get(), &allocInfo, &transferCommandBuffer));
+	JJYOU_VK_UTILS_CHECK(vkAllocateCommandBuffers(*this->context.device(), &allocInfo, &transferCommandBuffer));
 
 
 	VkCommandBufferBeginInfo beginInfo{
@@ -155,10 +155,10 @@ void Engine::copyBuffer(
 		.pSignalSemaphores = nullptr
 	};
 
-	vkQueueSubmit(*this->device.transferQueues(), 1, &submitInfo, nullptr);
-	vkQueueWaitIdle(*this->device.transferQueues());
+	vkQueueSubmit(**this->context.queue(jjyou::vk::Context::QueueType::Transfer), 1, &submitInfo, nullptr);
+	vkQueueWaitIdle(**this->context.queue(jjyou::vk::Context::QueueType::Transfer));
 
-	vkFreeCommandBuffers(this->device.get(), this->transferCommandPool, 1, &transferCommandBuffer);
+	vkFreeCommandBuffers(*this->context.device(), this->transferCommandPool, 1, &transferCommandBuffer);
 }
 
 void Engine::insertImageMemoryBarrier(
@@ -214,6 +214,6 @@ VkShaderModule Engine::createShaderModule(const std::filesystem::path& path) con
 		.codeSize = shaderCode.size(),
 		.pCode = reinterpret_cast<const uint32_t*>(shaderCode.data())
 	};
-	JJYOU_VK_UTILS_CHECK(vkCreateShaderModule(this->device.get(), &createInfo, nullptr, &shaderModule));
+	JJYOU_VK_UTILS_CHECK(vkCreateShaderModule(*this->context.device(), &createInfo, nullptr, &shaderModule));
 	return shaderModule;
 }

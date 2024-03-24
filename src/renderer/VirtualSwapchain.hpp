@@ -1,7 +1,6 @@
 #pragma once
 #include "fwd.hpp"
 
-#include <vulkan/vulkan.h>
 #include <vector>
 
 #include <jjyou/vk/Vulkan.hpp>
@@ -10,35 +9,66 @@ class VirtualSwapchain {
 
 public:
 
-	/** @brief	Default constructor.
+	/** @brief	Construct an empty swapchain.
 	  */
-	VirtualSwapchain(void) {}
+	VirtualSwapchain(std::nullptr_t) {}
+
+	/** @brief	Copy constructor is disabled.
+	  */
+	VirtualSwapchain(const VirtualSwapchain&) = delete;
+
+	/** @brief	Move constructor.
+	  */
+	VirtualSwapchain(VirtualSwapchain&& other) = default;
 
 	/** @brief	Destructor.
 	  */
-	~VirtualSwapchain(void) {}
-
-	/** @brief	Check whether the class contains images.
-	  * @return `true` if not empty.
-	  */
-	bool has_value() const {
-		return (this->device != nullptr);
+	~VirtualSwapchain(void) {
+		if (this->_pContext != nullptr) {
+			for (std::uint32_t i = 0; i < this->swapchainImages.size(); ++i) {
+				vkDestroyImageView(*this->_pContext->device(), this->swapchainImageViews[i], nullptr);
+				this->allocator->free(this->swapchainImageMemories[i]);
+				vkDestroyImage(*this->_pContext->device(), this->swapchainImages[i], nullptr);
+			}
+			this->swapchainImages.clear();
+			this->swapchainImageMemories.clear();
+			this->swapchainImageViews.clear();
+			this->allocator = nullptr;
+			this->_format = VK_FORMAT_UNDEFINED;
+			this->_extent = { .width = 0, .height = 0 };
+		}
 	}
 
-	/**	@brief	Create images and imageviews for the virtual swapchain
+	/** @brief	Copy assignment is disabled.
 	  */
-	void create(
-		const jjyou::vk::PhysicalDevice& physicalDevice,
-		const jjyou::vk::Device& device,
+	VirtualSwapchain& operator=(const VirtualSwapchain&) = delete;
+
+	/** @brief	Move assignment.
+	  */
+	VirtualSwapchain& operator=(VirtualSwapchain&& other) noexcept {
+		if (this != &other) {
+			this->_pContext = other._pContext;
+			other._pContext = nullptr;
+			this->allocator = allocator;
+			this->swapchainImages = std::move(other.swapchainImages);
+			this->swapchainImageMemories = std::move(other.swapchainImageMemories);
+			this->swapchainImageViews = std::move(other.swapchainImageViews);
+			this->_format = other._format;
+			this->_extent = other._extent;
+			this->currentImageIdx = other.currentImageIdx;
+		}
+		return *this;
+	}
+
+	/**	@brief	Create images and image views for the virtual swapchain
+	  */
+	VirtualSwapchain(
+		const jjyou::vk::Context& context,
 		jjyou::vk::MemoryAllocator& allocator,
 		std::uint32_t imageCount,
 		VkFormat format,
 		VkExtent2D imageExtent
 	);
-
-	/** @brief	Call the corresponding vkDestroyXXX function to destroy the wrapped instance.
-	  */
-	void destroy(void);
 
 	/** @brief	Similar to `vkAcquireNextImageKHR`.
 	  */
@@ -79,7 +109,7 @@ public:
 
 private:
 
-	const jjyou::vk::Device* device = nullptr;
+	const jjyou::vk::Context* _pContext = nullptr;
 	jjyou::vk::MemoryAllocator* allocator = nullptr;
 	std::vector<VkImage> swapchainImages = {};
 	std::vector<jjyou::vk::Memory> swapchainImageMemories = {};

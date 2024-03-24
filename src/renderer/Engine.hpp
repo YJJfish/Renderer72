@@ -1,7 +1,7 @@
 #pragma once
 #include "fwd.hpp"
 
-#define GLFW_INCLUDE_VULKAN
+#include <vulkan/vulkan_raii.hpp>
 #include <GLFW/glfw3.h>
 
 #include <iostream>
@@ -17,6 +17,7 @@
 #include <jjyou/vis/CameraView.hpp>
 #include <jjyou/io/Json.hpp>
 #include "VirtualSwapchain.hpp"
+#include "ShadowMap.hpp"
 #include "HostImage.hpp"
 #include "Clock.hpp"
 
@@ -75,21 +76,74 @@ public:
 	void resetClockTime(void) { this->clock->reset(); this->currClockTime = 0.0f; }
 	void setClock(Clock::Ptr&& clock) { this->clock = std::move(clock); }
 
-private:
+public:
 
 	struct ViewLevelUniform {
-		jjyou::glsl::mat4 projection;
-		jjyou::glsl::mat4 view;
-		jjyou::glsl::vec4 viewPos;
+		jjyou::glsl::mat4 projection{};
+		jjyou::glsl::mat4 view{};
+		jjyou::glsl::vec4 viewPos{};
 	};
 
 	struct ObjectLevelUniform {
-		jjyou::glsl::mat4 model;
-		jjyou::glsl::mat4 normal;
+		jjyou::glsl::mat4 model{};
+		jjyou::glsl::mat4 normal{};
 	};
 
 	struct SkyboxUniform {
-		jjyou::glsl::mat4 model;
+		jjyou::glsl::mat4 model{};
+	};
+
+	struct SunLight {
+		jjyou::glsl::vec3 direction{}; // Object to light, in world space
+		float angle = 0.0f;
+		jjyou::glsl::vec3 tint{}; // Already multiplied by strength
+		float __dummy1 = 0.0f;
+	};
+
+	struct SphereLight {
+		jjyou::glsl::vec3 position{}; // In world space
+		float radius = 0.0f;
+		jjyou::glsl::vec3 tint{}; // Already multiplied by power
+		float limit = 0.0f;
+	};
+
+	struct SpotLight {
+		jjyou::glsl::mat4 lightSpace{}; // Project points in world space to texture uv
+		jjyou::glsl::vec3 position{}; // In world space
+		float radius = 0.0f;
+		jjyou::glsl::vec3 direction{}; // Object to light, in world space
+		float fov = 0.0f;
+		jjyou::glsl::vec3 tint{}; // Already multiplied by power
+		float blend = 0.0f;
+		float limit = 0.0f;
+		int shadow = 0;
+		float __dummy2 = 0.0f;
+		float __dummy3 = 0.0f;
+	};
+
+	static constexpr inline std::uint32_t MAX_NUM_SUM_LIGHTS = 1;
+	static constexpr inline std::uint32_t MAX_NUM_SUM_LIGHTS_NO_SHADOW = 16;
+
+	static constexpr inline std::uint32_t MAX_NUM_SPHERE_LIGHTS = 4;
+	static constexpr inline std::uint32_t MAX_NUM_SPHERE_LIGHTS_NO_SHADOW = 128;
+
+	static constexpr inline std::uint32_t MAX_NUM_SPOT_LIGHTS = 4;
+	static constexpr inline std::uint32_t MAX_NUM_SPOT_LIGHTS_NO_SHADOW = 128;
+	struct Lights {
+		int numSunLights = 0;
+		int numSunLightsNoShadow = 0;
+		int numSphereLights = 0;
+		int numSphereLightsNoShadow = 0;
+		int numSpotLights = 0;
+		int numSpotLightsNoShadow = 0;
+		float __dummy1 = 0.0f;
+		float __dummy2 = 0.0f;
+		std::array<SunLight, MAX_NUM_SUM_LIGHTS> sunLights = {};
+		std::array<SunLight, MAX_NUM_SUM_LIGHTS_NO_SHADOW> sunLightsNoShadow = {};
+		std::array<SphereLight, MAX_NUM_SPHERE_LIGHTS> sphereLights = {};
+		std::array<SphereLight, MAX_NUM_SPHERE_LIGHTS_NO_SHADOW> sphereLightsNoShadow = {};
+		std::array<SpotLight, MAX_NUM_SPOT_LIGHTS> spotLights = {};
+		std::array<SpotLight, MAX_NUM_SPOT_LIGHTS_NO_SHADOW> spotLightsNoShadow = {};
 	};
 
 	struct FrameData {
@@ -149,28 +203,22 @@ public:
 	float currClockTime = 0.0f;
 	jjyou::vis::SceneView sceneViewer{};
 
-	static constexpr inline int MAX_FRAMES_IN_FLIGHT = 2;
+	static constexpr inline std::uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 
 	bool offscreen;
 
-	jjyou::vk::Loader loader;
-
 	GLFWwindow* window;
 
-	VkSurfaceKHR surface;
+	jjyou::vk::Context context{ nullptr };
 
-	jjyou::vk::Instance instance;
-
-	jjyou::vk::PhysicalDevice physicalDevice;
-
-	jjyou::vk::Device device;
+	vk::raii::SurfaceKHR surface{ nullptr };
 
 	VkCommandPool graphicsCommandPool, transferCommandPool;
 
 	jjyou::vk::MemoryAllocator allocator;
 	
-	jjyou::vk::Swapchain swapchain;
-	VirtualSwapchain virtualSwapchain;
+	jjyou::vk::Swapchain swapchain{ nullptr };
+	VirtualSwapchain virtualSwapchain{ nullptr };
 
 	VkFormat depthImageFormat;
 	VkImage depthImage;
@@ -178,6 +226,7 @@ public:
 	VkImageView depthImageView;
 
 	VkRenderPass renderPass;
+	vk::raii::RenderPass shadowMappingRenderPass{ nullptr };
 
 	std::vector<VkFramebuffer> framebuffers;
 
@@ -208,6 +257,9 @@ public:
 
 	VkPipelineLayout skyboxPipelineLayout;
 	VkPipeline skyboxPipeline;
+
+	VkPipelineLayout spotlightPipelineLayout;
+	VkPipeline spotlightPipeline;
 
 public:
 

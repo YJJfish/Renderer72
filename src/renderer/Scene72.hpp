@@ -135,9 +135,9 @@ namespace s72 {
 		EnvironmentMaterial(
 			std::uint32_t idx,
 			const std::string& name,
-			jjyou::vk::Texture2D normalMap,
-			jjyou::vk::Texture2D displacementMap
-		) : Material(idx, name, "environment"), normalMap(normalMap), displacementMap(displacementMap) {}
+			jjyou::vk::Texture2D&& normalMap,
+			jjyou::vk::Texture2D&& displacementMap
+		) : Material(idx, name, "environment"), normalMap(std::move(normalMap)), displacementMap(std::move(displacementMap)) {}
 		virtual ~EnvironmentMaterial(void) override {}
 		virtual std::uint32_t numTextures(void) const override { return 2; }
 		virtual const jjyou::vk::Texture2D& texture(std::uint32_t idx) const override { switch (idx) { case 0:return this->normalMap; case 1:return this->displacementMap; default: throw std::runtime_error("Environment material has exactly 2 textures."); } }
@@ -153,9 +153,9 @@ namespace s72 {
 		MirrorMaterial(
 			std::uint32_t idx,
 			const std::string& name,
-			jjyou::vk::Texture2D normalMap,
-			jjyou::vk::Texture2D displacementMap
-		) : Material(idx, name, "mirror"), normalMap(normalMap), displacementMap(displacementMap) {}
+			jjyou::vk::Texture2D&& normalMap,
+			jjyou::vk::Texture2D&& displacementMap
+		) : Material(idx, name, "mirror"), normalMap(std::move(normalMap)), displacementMap(std::move(displacementMap)) {}
 		virtual ~MirrorMaterial(void) override {}
 		virtual std::uint32_t numTextures(void) const override { return 2; }
 		virtual const jjyou::vk::Texture2D& texture(std::uint32_t idx) const override { switch (idx) { case 0:return this->normalMap; case 1:return this->displacementMap; default: throw std::runtime_error("Mirror material has exactly 2 textures."); } }
@@ -171,10 +171,10 @@ namespace s72 {
 		LambertianMaterial(
 			std::uint32_t idx,
 			const std::string& name,
-			jjyou::vk::Texture2D normalMap,
-			jjyou::vk::Texture2D displacementMap,
-			jjyou::vk::Texture2D albedo
-		) : Material(idx, name, "lambertian"), normalMap(normalMap), displacementMap(displacementMap), albedo(albedo) {}
+			jjyou::vk::Texture2D&& normalMap,
+			jjyou::vk::Texture2D&& displacementMap,
+			jjyou::vk::Texture2D&& albedo
+		) : Material(idx, name, "lambertian"), normalMap(std::move(normalMap)), displacementMap(std::move(displacementMap)), albedo(std::move(albedo)) {}
 		virtual ~LambertianMaterial(void) override {}
 		virtual std::uint32_t numTextures(void) const override { return 3; }
 		virtual const jjyou::vk::Texture2D& texture(std::uint32_t idx) const override { switch (idx) { case 0:return this->normalMap; case 1:return this->displacementMap; case 2: return this->albedo; default: throw std::runtime_error("Lambertian material has exactly 3 textures."); } }
@@ -191,12 +191,12 @@ namespace s72 {
 		PbrMaterial(
 			std::uint32_t idx,
 			const std::string& name,
-			jjyou::vk::Texture2D normalMap,
-			jjyou::vk::Texture2D displacementMap,
-			jjyou::vk::Texture2D albedo,
-			jjyou::vk::Texture2D roughness,
-			jjyou::vk::Texture2D metalness
-		) : Material(idx, name, "pbr"), normalMap(normalMap), displacementMap(displacementMap), albedo(albedo), roughness(roughness), metalness(metalness) {}
+			jjyou::vk::Texture2D&& normalMap,
+			jjyou::vk::Texture2D&& displacementMap,
+			jjyou::vk::Texture2D&& albedo,
+			jjyou::vk::Texture2D&& roughness,
+			jjyou::vk::Texture2D&& metalness
+		) : Material(idx, name, "pbr"), normalMap(std::move(normalMap)), displacementMap(std::move(displacementMap)), albedo(std::move(albedo)), roughness(std::move(roughness)), metalness(std::move(metalness)) {}
 		virtual ~PbrMaterial(void) override {}
 		virtual std::uint32_t numTextures(void) const override { return 5; }
 		virtual const jjyou::vk::Texture2D& texture(std::uint32_t idx) const override { switch (idx) { case 0:return this->normalMap; case 1:return this->displacementMap; case 2: return this->albedo; case 3: return this->roughness; case 4: return this->metalness; default: throw std::runtime_error("Pbr material has exactly 5 textures."); } }
@@ -215,10 +215,10 @@ namespace s72 {
 		Environment(
 			std::uint32_t idx,
 			const std::string& name,
-			jjyou::vk::Texture2D radiance,
-			jjyou::vk::Texture2D lambertian,
-			jjyou::vk::Texture2D environmentBRDF
-		) : Object(idx, "ENVIRONMENT", name), radiance(radiance), lambertian(lambertian), environmentBRDF(environmentBRDF){}
+			jjyou::vk::Texture2D&& radiance,
+			jjyou::vk::Texture2D&& lambertian,
+			jjyou::vk::Texture2D&& environmentBRDF
+		) : Object(idx, "ENVIRONMENT", name), radiance(std::move(radiance)), lambertian(std::move(lambertian)), environmentBRDF(std::move(environmentBRDF)) {}
 		virtual ~Environment(void) override {}
 		virtual std::uint32_t numTextures(void) const { return 3; }
 		virtual const jjyou::vk::Texture2D& texture(std::uint32_t idx) const { switch (idx) { case 0:return this->radiance; case 1:return this->lambertian; case 2:return this->environmentBRDF; default: throw std::runtime_error("Environment has exactly 3 textures."); } }
@@ -244,12 +244,92 @@ namespace s72 {
 			VkPrimitiveTopology topology,
 			std::uint32_t count,
 			VkBuffer vertexBuffer,
-			jjyou::vk::Memory vertexBufferMemory,
+			jjyou::vk::Memory&& vertexBufferMemory,
 			Material::WeakPtr material,
 			const BBox& bbox
-		) : Object(idx, "MESH", name), topology(topology), count(count), vertexBuffer(vertexBuffer), vertexBufferMemory(vertexBufferMemory), material(material), bbox(bbox)
+		) : Object(idx, "MESH", name), topology(topology), count(count), vertexBuffer(vertexBuffer), vertexBufferMemory(std::move(vertexBufferMemory)), material(material), bbox(bbox)
 		{}
 		virtual ~Mesh(void) override {}
+	};
+
+	class Light : public Object {
+	public:
+		using Ptr = std::shared_ptr<Light>;
+		using WeakPtr = std::weak_ptr<Light>;
+		std::string lightType;
+		jjyou::glsl::vec3 tint;
+		std::uint32_t shadow;
+		Light(
+			std::uint32_t idx,
+			const std::string& name,
+			const std::string& lightType,
+			const jjyou::glsl::vec3& tint,
+			std::uint32_t shadow
+		) : Object(idx, "LIGHT", name), lightType(lightType), tint(tint), shadow(shadow)
+		{}
+		virtual ~Light(void) override {}
+	};
+
+	class SunLight : public Light {
+	public:
+		using Ptr = std::shared_ptr<SunLight>;
+		using WeakPtr = std::weak_ptr<SunLight>;
+		float angle;
+		float strength;
+		SunLight(
+			std::uint32_t idx,
+			const std::string& name,
+			const jjyou::glsl::vec3& tint,
+			std::uint32_t shadow,
+			float angle,
+			float strength
+		) : Light(idx, name, "sun", tint, shadow), angle(angle), strength(strength)
+		{}
+		virtual ~SunLight(void) override {}
+	};
+
+	class SphereLight : public Light {
+	public:
+		using Ptr = std::shared_ptr<SphereLight>;
+		using WeakPtr = std::weak_ptr<SphereLight>;
+		float radius;
+		float power;
+		float limit;
+		SphereLight(
+			std::uint32_t idx,
+			const std::string& name,
+			const jjyou::glsl::vec3& tint,
+			std::uint32_t shadow,
+			float radius,
+			float power,
+			float limit
+		) : Light(idx, name, "sphere", tint, shadow), radius(radius), power(power), limit(limit)
+		{}
+		virtual ~SphereLight(void) override {}
+	};
+
+	class SpotLight : public Light {
+	public:
+		using Ptr = std::shared_ptr<SpotLight>;
+		using WeakPtr = std::weak_ptr<SpotLight>;
+		float radius;
+		float power;
+		float fov;
+		float blend;
+		float limit;
+		SpotLight(
+			std::uint32_t idx,
+			const std::string& name,
+			const jjyou::glsl::vec3& tint,
+			std::uint32_t shadow,
+			float radius,
+			float power,
+			float fov,
+			float blend,
+			float limit
+		) : Light(idx, name, "spot", tint, shadow), radius(radius), power(power), fov(fov), blend(blend), limit(limit)
+		{}
+		virtual ~SpotLight(void) override {}
 	};
 
 	class Node : public Object {
@@ -263,6 +343,7 @@ namespace s72 {
 		Camera::WeakPtr camera;
 		Mesh::WeakPtr mesh;
 		Environment::WeakPtr environment;
+		Light::WeakPtr light;
 		std::array<std::weak_ptr<Driver>, 3> drivers;
 		Node(
 			std::uint32_t idx,
@@ -274,6 +355,7 @@ namespace s72 {
 			Camera::WeakPtr camera,
 			Mesh::WeakPtr mesh,
 			Environment::WeakPtr environment,
+			Light::WeakPtr light,
 			const std::array<std::weak_ptr<Driver>, 3>& drivers
 		) : Object(idx, "NODE", name), translation(translation), rotation(rotation), scale(scale), children(children), camera(camera), mesh(mesh), environment(environment), drivers(drivers)
 		{}
@@ -363,6 +445,8 @@ namespace s72 {
 			VkDescriptorSet viewLevelUniformDescriptorSet = nullptr;
 			VkBuffer viewLevelUniformBuffer = nullptr;
 			jjyou::vk::Memory viewLevelUniformBufferMemory{};
+			vk::raii::Buffer lightsBuffer{ nullptr };
+			jjyou::vk::Memory lightsBufferMemory{};
 
 			VkDescriptorSet objectLevelUniformDescriptorSet = nullptr;
 			VkBuffer objectLevelUniformBuffer = nullptr;
@@ -375,6 +459,10 @@ namespace s72 {
 			VkDescriptorSet skyboxUniformDescriptorSet = nullptr;
 		};
 		std::array<FrameDescriptorSets, Engine::MAX_FRAMES_IN_FLIGHT> frameDescriptorSets{};
+		std::vector<ShadowMap> sunLightShadowMaps{};
+		std::vector<ShadowMap> sphereLightShadowMaps{};
+		vk::raii::Sampler spotLightShadowMapSampler{ nullptr };
+		std::vector<ShadowMap> spotLightShadowMaps{};
 		VkDescriptorPool descriptorPool = nullptr;
 		
 

@@ -36,11 +36,11 @@ void Engine::drawFrame() {
 		}
 	}
 	this->currClockTime = now;
-	vkWaitForFences(this->device.get(), 1, &this->frameData[this->currentFrame].inFlightFence, VK_TRUE, UINT64_MAX);
+	vkWaitForFences(*this->context.device(), 1, &this->frameData[this->currentFrame].inFlightFence, VK_TRUE, UINT64_MAX);
 
 	uint32_t imageIndex;
 	if (!this->offscreen) {
-		VkResult acquireImageResult = vkAcquireNextImageKHR(this->device.get(), this->swapchain.get(), UINT64_MAX, this->frameData[this->currentFrame].imageAvailableSemaphore, nullptr, &imageIndex);
+		VkResult acquireImageResult = vkAcquireNextImageKHR(*this->context.device(), *this->swapchain.swapchain(), UINT64_MAX, this->frameData[this->currentFrame].imageAvailableSemaphore, nullptr, &imageIndex);
 
 		if (acquireImageResult == VK_ERROR_OUT_OF_DATE_KHR) {
 			this->handleFramebufferResizing();
@@ -55,11 +55,138 @@ void Engine::drawFrame() {
 	}
 	
 
-	vkResetFences(this->device.get(), 1, &this->frameData[this->currentFrame].inFlightFence);
+	vkResetFences(*this->context.device(), 1, &this->frameData[this->currentFrame].inFlightFence);
 
 	vkResetCommandBuffer(this->frameData[this->currentFrame].graphicsCommandBuffer, 0);
 
-	VkExtent2D screenExtent = this->offscreen ? this->virtualSwapchain.extent() : this->swapchain.extent();
+	VkExtent2D screenExtent = this->offscreen ? this->virtualSwapchain.extent() : static_cast<VkExtent2D>(this->swapchain.extent());
+	
+	// Traverse the scene to get the instances to render, the environment model matrix, and camera transforms
+	struct InstanceToDraw {
+		jjyou::glsl::mat4 transform;
+		s72::Mesh::Ptr mesh;
+	};
+	struct SkyboxUniform skyboxUniform {
+		.model = jjyou::glsl::mat4(1.0f)
+	};
+	struct CameraInfo {
+		float aspectRatio;
+		jjyou::glsl::mat4 projection;
+		jjyou::glsl::mat4 view;
+	};
+	std::vector<InstanceToDraw> simpleInstances;
+	std::vector<InstanceToDraw> mirrorInstances;
+	std::vector<InstanceToDraw> environmentInstances;
+	std::vector<InstanceToDraw> lambertianInstances;
+	std::vector<InstanceToDraw> pbrInstances;
+	Lights lights{};
+	std::unordered_map<std::string, CameraInfo> cameraInfos;
+	std::function<bool(s72::Node::Ptr, const jjyou::glsl::mat4&)> traverseSceneVisitor =
+		[&](s72::Node::Ptr node, const jjyou::glsl::mat4& transform) -> bool {
+		if (!node->mesh.expired()) {
+			s72::Mesh::Ptr mesh = node->mesh.lock();
+			InstanceToDraw instanceToDraw{ .transform = transform, .mesh = mesh };
+			if (mesh->material.lock()->materialType == "simple")
+				simpleInstances.push_back(instanceToDraw);
+			else if (mesh->material.lock()->materialType == "mirror")
+				mirrorInstances.push_back(instanceToDraw);
+			else if (mesh->material.lock()->materialType == "environment")
+				environmentInstances.push_back(instanceToDraw);
+			else if (mesh->material.lock()->materialType == "lambertian")
+				lambertianInstances.push_back(instanceToDraw);
+			else if (mesh->material.lock()->materialType == "pbr")
+				pbrInstances.push_back(instanceToDraw);
+		}
+		if (!node->environment.expired()) {
+			skyboxUniform.model = jjyou::glsl::inverse(jjyou::glsl::mat3(transform));
+		}
+		if (!node->camera.expired()) {
+			s72::Camera::Ptr camera = node->camera.lock();
+			cameraInfos.emplace(
+				camera->name,
+				CameraInfo{
+					.aspectRatio = camera->getAspectRatio(),
+					.projection = camera->getProjectionMatrix(),
+					.view = jjyou::glsl::inverse(transform)
+				}
+			);
+		}
+		if (!node->light.expired()) {
+			s72::Light::Ptr light = node->light.lock();
+			if (light->lightType == "sun") {
+				s72::SunLight::Ptr sunLight = std::reinterpret_pointer_cast<s72::SunLight>(light);
+				if (sunLight->shadow == 0) {
+					lights.sunLightsNoShadow[lights.numSunLightsNoShadow++] = Engine::SunLight{
+						.direction = jjyou::glsl::normalized(jjyou::glsl::vec3(transform[2])),
+						.angle = sunLight->angle,
+						.tint = sunLight->tint * sunLight->strength
+					};
+				}
+			}
+			else if (light->lightType == "sphere") {
+				s72::SphereLight::Ptr sphereLight = std::reinterpret_pointer_cast<s72::SphereLight>(light);
+				if (sphereLight->shadow == 0) {
+					lights.sphereLightsNoShadow[lights.numSphereLightsNoShadow++] = Engine::SphereLight{
+						.position = jjyou::glsl::vec3(transform[3]),
+						.radius = sphereLight->radius,
+						.tint = sphereLight->tint * sphereLight->power,
+						.limit = sphereLight->limit
+					};
+				}
+			}
+			else if (light->lightType == "spot") {
+				s72::SpotLight::Ptr spotLight = std::reinterpret_pointer_cast<s72::SpotLight>(light);
+				Engine::SpotLight& spotLightStruct = (spotLight->shadow == 0) ? lights.spotLightsNoShadow[lights.numSpotLightsNoShadow++] : lights.spotLights[lights.numSpotLights++];
+				jjyou::glsl::mat4 invZ = jjyou::glsl::mat4(1.0f); invZ[2][2] = -1.0f; invZ[0][0] = -1.0f;
+				spotLightStruct = Engine::SpotLight{
+					.lightSpace = jjyou::glsl::perspective(spotLight->fov, 1.0f, std::cos(spotLight->fov / 2.0f) * spotLight->radius, spotLight->limit) * invZ * jjyou::glsl::inverse(transform),
+					.position = jjyou::glsl::vec3(transform[3]),
+					.radius = spotLight->radius,
+					.direction = jjyou::glsl::normalized(jjyou::glsl::vec3(transform[2])),
+					.fov = spotLight->fov,
+					.tint = spotLight->tint * spotLight->power,
+					.blend = spotLight->blend,
+					.limit = spotLight->limit,
+					.shadow = static_cast<int>(spotLight->shadow)
+				};
+			}
+		}
+		return true;
+		};
+	if (this->pScene72 != nullptr) {
+		//Scene72 are "+z" up, however in our coordinate the scene is "-y" up
+		jjyou::glsl::mat4 rootTransform;
+		rootTransform[0][0] = 1.0f;
+		rootTransform[2][1] = -1.0f;
+		rootTransform[1][2] = 1.0f;
+		rootTransform[3][3] = 1.0f;
+		this->pScene72->traverse(
+			this->currPlayTime,
+			rootTransform,
+			traverseSceneVisitor
+		);
+	}
+	
+	// Compute dynamic uniform buffer offset
+	VkDeviceSize minAlignment = this->context.physicalDevice().getProperties().limits.minUniformBufferOffsetAlignment;
+	VkDeviceSize dynamicBufferOffset = sizeof(Engine::ObjectLevelUniform);
+	if (minAlignment > 0)
+		dynamicBufferOffset = (dynamicBufferOffset + minAlignment - 1) & ~(minAlignment - 1);
+	std::size_t instanceCount = 0;
+	for (const auto& instancesToDraw : { std::cref(simpleInstances), std::cref(mirrorInstances), std::cref(environmentInstances), std::cref(lambertianInstances), std::cref(pbrInstances) }) {
+		for (const auto& instanceToDraw : instancesToDraw.get()) {
+			VkDeviceSize vertexBufferOffsets = 0;
+			std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
+			instanceCount++;
+			Engine::ObjectLevelUniform objectLevelUniform{
+				.model = instanceToDraw.transform,
+				.normal = jjyou::glsl::transpose(jjyou::glsl::inverse(instanceToDraw.transform))
+			};
+			char* dst = reinterpret_cast<char*>(this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformBufferMemory.mappedAddress()) + dynamicOffset;
+			memcpy(reinterpret_cast<void*>(dst), &objectLevelUniform, sizeof(Engine::ObjectLevelUniform));
+		}
+	}
+	
 	// Record command buffer
 	{
 		VkCommandBufferBeginInfo beginInfo{
@@ -71,93 +198,57 @@ void Engine::drawFrame() {
 
 		JJYOU_VK_UTILS_CHECK(vkBeginCommandBuffer(this->frameData[this->currentFrame].graphicsCommandBuffer, &beginInfo));
 
-		std::array<VkClearValue, 2> clearValues{ {
-			VkClearValue{
-				.color = { {0.0f, 0.0f, 0.0f, 1.0f} }
-			},
-			VkClearValue{
+		// Compute shadow mapping
+		for (int i = 0; i < lights.numSpotLights; ++i) {
+			VkClearValue clearValue = VkClearValue{
 				.depthStencil = { 1.0f, 0 }
-			}
-		} };
-		VkRenderPassBeginInfo renderPassInfo{
-			.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-			.pNext = nullptr,
-			.renderPass = this->renderPass,
-			.framebuffer = this->framebuffers[imageIndex],
-			.renderArea = {
-				.offset = {0, 0},
-				.extent = screenExtent
-			},
-			.clearValueCount = static_cast<uint32_t>(clearValues.size()),
-			.pClearValues = clearValues.data()
-		};
-
-		vkCmdBeginRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-		// Traverse the scene to get the instances to render, the environment model matrix, and camera transforms
-		struct InstanceToDraw {
-			jjyou::glsl::mat4 transform;
-			s72::Mesh::Ptr mesh;
-		};
-		struct SkyboxUniform skyboxUniform {
-			.model = jjyou::glsl::mat4(1.0f)
-		};
-		struct CameraInfo {
-			float aspectRatio;
-			jjyou::glsl::mat4 projection;
-			jjyou::glsl::mat4 view;
-		};
-		std::vector<InstanceToDraw> simpleInstances;
-		std::vector<InstanceToDraw> mirrorInstances;
-		std::vector<InstanceToDraw> environmentInstances;
-		std::vector<InstanceToDraw> lambertianInstances;
-		std::vector<InstanceToDraw> pbrInstances;
-		std::unordered_map<std::string, CameraInfo> cameraInfos;
-		std::function<bool(s72::Node::Ptr, const jjyou::glsl::mat4&)> traverseSceneVisitor =
-			[&](s72::Node::Ptr node, const jjyou::glsl::mat4& transform) -> bool {
-			if (!node->mesh.expired()) {
-				s72::Mesh::Ptr mesh = node->mesh.lock();
-				InstanceToDraw instanceToDraw{ .transform = transform, .mesh = mesh };
-				if (mesh->material.lock()->materialType == "simple")
-					simpleInstances.push_back(instanceToDraw);
-				else if (mesh->material.lock()->materialType == "mirror")
-					mirrorInstances.push_back(instanceToDraw);
-				else if (mesh->material.lock()->materialType == "environment")
-					environmentInstances.push_back(instanceToDraw);
-				else if (mesh->material.lock()->materialType == "lambertian")
-					lambertianInstances.push_back(instanceToDraw);
-				else if (mesh->material.lock()->materialType == "pbr")
-					pbrInstances.push_back(instanceToDraw);
-			}
-			if (!node->environment.expired()) {
-				skyboxUniform.model = jjyou::glsl::inverse(jjyou::glsl::mat3(transform));
-			}
-			if (!node->camera.expired()) {
-				s72::Camera::Ptr camera = node->camera.lock();
-				cameraInfos.emplace(
-					camera->name,
-					CameraInfo{
-						.aspectRatio = camera->getAspectRatio(),
-						.projection = camera->getProjectionMatrix(),
-						.view = jjyou::glsl::inverse(transform)
-					}
-				);
-			}
-			return true;
 			};
-		if (this->pScene72 != nullptr) {
-			//Scene72 are "+z" up, however in our coordinate the scene is "-y" up
-			jjyou::glsl::mat4 rootTransform;
-			rootTransform[0][0] = 1.0f;
-			rootTransform[2][1] = -1.0f;
-			rootTransform[1][2] = 1.0f;
-			rootTransform[3][3] = 1.0f;
-			this->pScene72->traverse(
-				this->currPlayTime,
-				rootTransform,
-				traverseSceneVisitor
-			);
+			VkRenderPassBeginInfo renderPassInfo{
+				.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+				.pNext = nullptr,
+				.renderPass = *this->shadowMappingRenderPass,
+				.framebuffer = *this->pScene72->spotLightShadowMaps[i].framebuffer(0),
+				.renderArea = {
+					.offset = {0, 0},
+					.extent = this->pScene72->spotLightShadowMaps[i].extent()
+				},
+				.clearValueCount = 1U,
+				.pClearValues = &clearValue
+			};
+			vkCmdBeginRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->spotlightPipeline);
+			VkViewport shadowMappingViewport{
+				.x = 0.0f,
+				.y = 0.0f,
+				.width = static_cast<float>(this->pScene72->spotLightShadowMaps[i].extent().width),
+				.height = static_cast<float>(this->pScene72->spotLightShadowMaps[i].extent().height),
+				.minDepth = 0.0f,
+				.maxDepth = 1.0f
+			};
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &shadowMappingViewport);
+			VkRect2D shadowMappingScissor{
+				.offset = { 0, 0 },
+				.extent = this->pScene72->spotLightShadowMaps[i].extent(),
+			};
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &shadowMappingScissor);
+			vkCmdSetDepthBias(this->frameData[this->currentFrame].graphicsCommandBuffer, 1.25f, 0.0f, 1.75f);
+			vkCmdPushConstants(this->frameData[this->currentFrame].graphicsCommandBuffer, this->spotlightPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0U, sizeof(lights.spotLights[i].lightSpace), &lights.spotLights[i].lightSpace);
+			instanceCount = static_cast<std::uint32_t>(simpleInstances.size()); // Skip simple material
+			for (const auto& instancesToDraw : { std::cref(mirrorInstances), std::cref(environmentInstances), std::cref(lambertianInstances), std::cref(pbrInstances) }) {
+				for (const auto& instanceToDraw : instancesToDraw.get()) {
+					VkDeviceSize vertexBufferOffsets = 0;
+					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
+					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
+					instanceCount++;
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->spotlightPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
+					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
+				}
+			}
+			vkCmdEndRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer);
 		}
+
+		// Draw the scene
+		
 		// Get view matrices and culling matrices
 		jjyou::glsl::mat4 viewingProjection;
 		jjyou::glsl::mat4 viewingView;
@@ -207,13 +298,7 @@ void Engine::drawFrame() {
 			.offset = { 0, 0 },
 			.extent = screenExtent,
 		};
-		// Compute dynamic uniform buffer offset
-		VkDeviceSize minAlignment = this->physicalDevice.deviceProperties().limits.minUniformBufferOffsetAlignment;
-		VkDeviceSize dynamicBufferOffset = sizeof(Engine::ObjectLevelUniform);
-		if (minAlignment > 0)
-			dynamicBufferOffset = (dynamicBufferOffset + minAlignment - 1) & ~(minAlignment - 1);
-
-		// Actually draw
+		// Copy uniform buffer
 		Engine::ViewLevelUniform viewLevelUniform{
 			.projection = viewingProjection,
 			.view = viewingView,
@@ -223,6 +308,30 @@ void Engine::drawFrame() {
 		if (this->pScene72->environment) {
 			memcpy(this->pScene72->frameDescriptorSets[this->currentFrame].skyboxUniformBufferMemory.mappedAddress(), &skyboxUniform, sizeof(Engine::SkyboxUniform));
 		}
+		memcpy(this->pScene72->frameDescriptorSets[this->currentFrame].lightsBufferMemory.mappedAddress(), &lights, sizeof(Engine::Lights));
+
+		std::array<VkClearValue, 2> clearValues{ {
+			VkClearValue{
+				.color = { {0.0f, 0.0f, 0.0f, 1.0f} }
+			},
+			VkClearValue{
+				.depthStencil = { 1.0f, 0 }
+			}
+		} };
+		VkRenderPassBeginInfo renderPassInfo{
+			.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+			.pNext = nullptr,
+			.renderPass = this->renderPass,
+			.framebuffer = this->framebuffers[imageIndex],
+			.renderArea = {
+				.offset = {0, 0},
+				.extent = screenExtent
+			},
+			.clearValueCount = static_cast<uint32_t>(clearValues.size()),
+			.pClearValues = clearValues.data()
+		};
+
+		vkCmdBeginRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
 		if (this->pScene72->environment) {
 			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->skyboxPipeline);
@@ -233,7 +342,7 @@ void Engine::drawFrame() {
 			vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, 36, 1, 0, 0);
 		}
 
-		std::size_t instanceCount = 0;
+		instanceCount = 0;
 		if (!simpleInstances.empty()) {
 			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->simplePipeline);
 			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &viewport);
@@ -246,16 +355,10 @@ void Engine::drawFrame() {
 					VkDeviceSize vertexBufferOffsets = 0;
 					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
 					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
-					instanceCount++;
-					Engine::ObjectLevelUniform objectLevelUniform{
-						.model = instanceToDraw.transform,
-						.normal = jjyou::glsl::transpose(jjyou::glsl::inverse(instanceToDraw.transform))
-					};
-					char* dst = reinterpret_cast<char*>(this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformBufferMemory.mappedAddress()) + dynamicOffset;
-					memcpy(reinterpret_cast<void*>(dst), &objectLevelUniform, sizeof(Engine::ObjectLevelUniform));
 					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->simplePipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
 					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
 				}
+				instanceCount++;
 			}
 		}
 		if (!mirrorInstances.empty()) {
@@ -271,17 +374,11 @@ void Engine::drawFrame() {
 					VkDeviceSize vertexBufferOffsets = 0;
 					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
 					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
-					instanceCount++;
-					Engine::ObjectLevelUniform objectLevelUniform{
-						.model = instanceToDraw.transform,
-						.normal = jjyou::glsl::transpose(jjyou::glsl::inverse(instanceToDraw.transform))
-					};
-					char* dst = reinterpret_cast<char*>(this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformBufferMemory.mappedAddress()) + dynamicOffset;
-					memcpy(reinterpret_cast<void*>(dst), &objectLevelUniform, sizeof(Engine::ObjectLevelUniform));
 					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
 					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorPipelineLayout, 2, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].materialLevelUniformDescriptorSets[instanceToDraw.mesh->material.lock()->idx], 0, nullptr);
 					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
 				}
+				instanceCount++;
 			}
 		}
 		if (!environmentInstances.empty()) {
@@ -297,17 +394,11 @@ void Engine::drawFrame() {
 					VkDeviceSize vertexBufferOffsets = 0;
 					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
 					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
-					instanceCount++;
-					Engine::ObjectLevelUniform objectLevelUniform{
-						.model = instanceToDraw.transform,
-						.normal = jjyou::glsl::transpose(jjyou::glsl::inverse(instanceToDraw.transform))
-					};
-					char* dst = reinterpret_cast<char*>(this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformBufferMemory.mappedAddress()) + dynamicOffset;
-					memcpy(reinterpret_cast<void*>(dst), &objectLevelUniform, sizeof(Engine::ObjectLevelUniform));
 					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
 					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentPipelineLayout, 2, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].materialLevelUniformDescriptorSets[instanceToDraw.mesh->material.lock()->idx], 0, nullptr);
 					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
 				}
+				instanceCount++;
 			}
 		}
 		if (!lambertianInstances.empty()) {
@@ -323,17 +414,11 @@ void Engine::drawFrame() {
 					VkDeviceSize vertexBufferOffsets = 0;
 					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
 					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
-					instanceCount++;
-					Engine::ObjectLevelUniform objectLevelUniform{
-						.model = instanceToDraw.transform,
-						.normal = jjyou::glsl::transpose(jjyou::glsl::inverse(instanceToDraw.transform))
-					};
-					char* dst = reinterpret_cast<char*>(this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformBufferMemory.mappedAddress()) + dynamicOffset;
-					memcpy(reinterpret_cast<void*>(dst), &objectLevelUniform, sizeof(Engine::ObjectLevelUniform));
 					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
 					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianPipelineLayout, 2, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].materialLevelUniformDescriptorSets[instanceToDraw.mesh->material.lock()->idx], 0, nullptr);
 					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
 				}
+				instanceCount++;
 			}
 		}
 		if (!pbrInstances.empty()) {
@@ -349,17 +434,11 @@ void Engine::drawFrame() {
 					VkDeviceSize vertexBufferOffsets = 0;
 					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
 					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
-					instanceCount++;
-					Engine::ObjectLevelUniform objectLevelUniform{
-						.model = instanceToDraw.transform,
-						.normal = jjyou::glsl::transpose(jjyou::glsl::inverse(instanceToDraw.transform))
-					};
-					char* dst = reinterpret_cast<char*>(this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformBufferMemory.mappedAddress()) + dynamicOffset;
-					memcpy(reinterpret_cast<void*>(dst), &objectLevelUniform, sizeof(Engine::ObjectLevelUniform));
 					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pbrPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
 					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pbrPipelineLayout, 2, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].materialLevelUniformDescriptorSets[instanceToDraw.mesh->material.lock()->idx], 0, nullptr);
 					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
 				}
+				instanceCount++;
 			}
 		}
 		// Finish
@@ -381,10 +460,10 @@ void Engine::drawFrame() {
 		.signalSemaphoreCount = (this->offscreen) ? 0U : 1U,
 		.pSignalSemaphores = (this->offscreen) ? nullptr : &this->frameData[this->currentFrame].renderFinishedSemaphore
 	};
-	JJYOU_VK_UTILS_CHECK(vkQueueSubmit(*this->device.graphicsQueues(), 1, &submitInfo, this->frameData[this->currentFrame].inFlightFence));
+	JJYOU_VK_UTILS_CHECK(vkQueueSubmit(**this->context.queue(jjyou::vk::Context::QueueType::Main), 1, &submitInfo, this->frameData[this->currentFrame].inFlightFence));
 
 	if (!this->offscreen) {
-		VkSwapchainKHR swapChains[] = { this->swapchain.get() };
+		VkSwapchainKHR swapChains[] = { *this->swapchain.swapchain() };
 		VkPresentInfoKHR presentInfo{
 			.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
 			.pNext = nullptr,
@@ -395,7 +474,7 @@ void Engine::drawFrame() {
 			.pImageIndices = &imageIndex,
 			.pResults = nullptr
 		};
-		VkResult presentResult = vkQueuePresentKHR(*this->device.presentQueues(), &presentInfo);
+		VkResult presentResult = vkQueuePresentKHR(**this->context.queue(jjyou::vk::Context::QueueType::Main), &presentInfo);
 
 		if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR || framebufferResized) {
 			framebufferResized = false;
@@ -413,7 +492,7 @@ HostImage Engine::getLastRenderedFrame(void) {
 	if (!this->offscreen)
 		return HostImage{};
 	int lastFrame = (this->currentFrame + Engine::MAX_FRAMES_IN_FLIGHT - 1) % Engine::MAX_FRAMES_IN_FLIGHT;
-	vkWaitForFences(this->device.get(), 1, &this->frameData[lastFrame].inFlightFence, VK_TRUE, UINT64_MAX);
+	vkWaitForFences(*this->context.device(), 1, &this->frameData[lastFrame].inFlightFence, VK_TRUE, UINT64_MAX);
 	std::uint32_t imageIndex;
 	JJYOU_VK_UTILS_CHECK(this->virtualSwapchain.acquireLastImage(&imageIndex));
 	// create host visible and host coherent image
@@ -425,7 +504,7 @@ HostImage Engine::getLastRenderedFrame(void) {
 		VK_FORMAT_R8G8B8A8_UNORM,
 		VK_IMAGE_TILING_LINEAR,
 		VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		{ *this->physicalDevice.graphicsQueueFamily(), *this->physicalDevice.transferQueueFamily() },
+		{ *this->context.queueFamilyIndex(jjyou::vk::Context::QueueType::Main), *this->context.queueFamilyIndex(jjyou::vk::Context::QueueType::Transfer) },
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
 	);
 	// create transfer command buffer
@@ -436,7 +515,7 @@ HostImage Engine::getLastRenderedFrame(void) {
 		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
 		.commandBufferCount = 1,
 	};
-	JJYOU_VK_UTILS_CHECK(vkAllocateCommandBuffers(this->device.get(), &allocInfo, &transferCommandBuffer));
+	JJYOU_VK_UTILS_CHECK(vkAllocateCommandBuffers(*this->context.device(), &allocInfo, &transferCommandBuffer));
 	// begin command buffer
 	VkCommandBufferBeginInfo beginInfo{
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -520,15 +599,15 @@ HostImage Engine::getLastRenderedFrame(void) {
 		.signalSemaphoreCount = 0,
 		.pSignalSemaphores = nullptr
 	};
-	JJYOU_VK_UTILS_CHECK(vkQueueSubmit(*this->device.transferQueues(), 1, &submitInfo, nullptr));
-	JJYOU_VK_UTILS_CHECK(vkQueueWaitIdle(*this->device.transferQueues()));
-	vkFreeCommandBuffers(this->device.get(), this->transferCommandPool, 1, &transferCommandBuffer);
+	JJYOU_VK_UTILS_CHECK(vkQueueSubmit(**this->context.queue(jjyou::vk::Context::QueueType::Transfer), 1, &submitInfo, nullptr));
+	JJYOU_VK_UTILS_CHECK(vkQueueWaitIdle(**this->context.queue(jjyou::vk::Context::QueueType::Transfer)));
+	vkFreeCommandBuffers(*this->context.device(), this->transferCommandPool, 1, &transferCommandBuffer);
 	// copy buffer to cpu memory
 	// Get layout of the image (including row pitch)
 	VkImageSubresource subResource{};
 	subResource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	VkSubresourceLayout subResourceLayout;
-	vkGetImageSubresourceLayout(this->device.get(), image, &subResource, &subResourceLayout);
+	vkGetImageSubresourceLayout(*this->context.device(), image, &subResource, &subResourceLayout);
 	this->allocator.map(imageMemory);
 	HostImage hostImage(this->virtualSwapchain.extent().width, this->virtualSwapchain.extent().height);
 	for (std::uint32_t r = 0; r < this->virtualSwapchain.extent().height; ++r) {
@@ -543,7 +622,7 @@ HostImage Engine::getLastRenderedFrame(void) {
 	}
 	this->allocator.unmap(imageMemory);
 	this->allocator.free(imageMemory);
-	vkDestroyImage(this->device.get(), image, nullptr);
+	vkDestroyImage(*this->context.device(), image, nullptr);
 	// return
 	return hostImage;
 }
@@ -555,22 +634,17 @@ void Engine::handleFramebufferResizing(void) {
 		glfwWaitEvents();
 		glfwGetFramebufferSize(window, &width, &height);
 	}
-	vkDeviceWaitIdle(this->device.get());
+	vkDeviceWaitIdle(*this->context.device());
 
 	// Destroy frame buffers
 	for (int i = 0; i < this->framebuffers.size(); ++i) {
-		vkDestroyFramebuffer(this->device.get(), this->framebuffers[i], nullptr);
+		vkDestroyFramebuffer(*this->context.device(), this->framebuffers[i], nullptr);
 	}
 
 	// Destroy depth image
-	vkDestroyImageView(this->device.get(), this->depthImageView, nullptr);
-	vkDestroyImage(this->device.get(), this->depthImage, nullptr);
+	vkDestroyImageView(*this->context.device(), this->depthImageView, nullptr);
+	vkDestroyImage(*this->context.device(), this->depthImage, nullptr);
 	this->allocator.free(this->depthImageMemory);
-
-	// Destroy swapchain
-	if (!this->offscreen) {
-		this->swapchain.destroy();
-	}
 
 	this->createSwapchain();
 	this->createDepthImage();

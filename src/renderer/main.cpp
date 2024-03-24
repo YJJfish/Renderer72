@@ -19,23 +19,40 @@ int main(int argc, char* argv[]) {
 		argParser.parseArgs(argc, argv);
 		// List the physical devices and exit, if "--list-physical-devices" is inputted.
 		if (argParser.listPhysicalDevices) {
-			jjyou::vk::InstanceBuilder builder;
-			jjyou::vk::Instance instance = builder.offscreen(true).build();
-			jjyou::vk::PhysicalDeviceSelector selector(instance, nullptr);
-			std::vector<jjyou::vk::PhysicalDevice> physicalDevices = selector.listAllPhysicalDevices();
-			for (const auto& physicalDevice : physicalDevices) {
+			jjyou::vk::ContextBuilder builder;
+			jjyou::vk::Context context{ nullptr };
+			// Instance
+			builder
+				.headless(true)
+				.enableValidation(false)
+				.applicationName("Renderer72")
+				.applicationVersion(0, 1, 0, 0)
+				.engineName("Engine72")
+				.engineVersion(0, 1, 0, 0)
+				.apiVersion(0, 1, 0, 0);
+			builder.buildInstance(context);
+			// Physical device
+			builder.requirePhysicalDeviceFeatures(
+				VkPhysicalDeviceFeatures{
+					.geometryShader = true,
+					.samplerAnisotropy = true,
+				}
+			);
+			std::vector<jjyou::vk::PhysicalDeviceInfo> physicalDeviceInfos = builder.listPhysicalDevices(context);
+			for (const auto& physicalDeviceInfo : physicalDeviceInfos) {
+				vk::PhysicalDeviceProperties properties = physicalDeviceInfo.physicalDevice.getProperties();
 				std::cout << "===================================================" << std::endl;
-				std::cout << "Device name: " << physicalDevice.deviceProperties().deviceName << std::endl;
-				std::cout << "API version: " << physicalDevice.deviceProperties().apiVersion << std::endl;
-				std::cout << "Driver version: " << physicalDevice.deviceProperties().driverVersion << std::endl;
-				std::cout << "Vendor ID: " << physicalDevice.deviceProperties().vendorID << std::endl;
-				std::cout << "Device ID: " << physicalDevice.deviceProperties().deviceID << std::endl;
-				std::cout << "Device type: " << string_VkPhysicalDeviceType(physicalDevice.deviceProperties().deviceType) << std::endl;
+				std::cout << "Device name: " << properties.deviceName << std::endl;
+				std::cout << "API version: " << properties.apiVersion << std::endl;
+				std::cout << "Driver version: " << properties.driverVersion << std::endl;
+				std::cout << "Vendor ID: " << properties.vendorID << std::endl;
+				std::cout << "Device ID: " << properties.deviceID << std::endl;
+				std::cout << "Device type: " << string_VkPhysicalDeviceType(static_cast<VkPhysicalDeviceType>(properties.deviceType)) << std::endl;
+				std::cout << "Available for this application : " << std::boolalpha << (physicalDeviceInfo.requiredCriteria == jjyou::vk::PhysicalDeviceInfo::Support::AllSupported) << std::endl;
 			}
 			std::cout << "===================================================" << std::endl;
-			instance.destroy();
 			exit(0);
-		}
+		} 
 
 		// Initialize the engine.
 		Engine engine(

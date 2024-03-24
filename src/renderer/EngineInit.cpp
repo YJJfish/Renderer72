@@ -22,69 +22,53 @@ Engine::Engine(
 		glfwSetScrollCallback(this->window, Engine::scrollCallback);
 		glfwSetKeyCallback(this->window, Engine::keyCallback);
 	}
-	this->sceneViewer.setZoomRate(10.0f);
+	this->sceneViewer.setZoomRate(15.0f);
 
-	// Create instance
+	// Create vulkan context
 	{
-		jjyou::vk::InstanceBuilder builder;
+		jjyou::vk::ContextBuilder builder;
+		// Instance
 		builder
+			.headless(this->offscreen)
 			.enableValidation(enableValidation)
-			.offscreen(this->offscreen)
 			.applicationName("Renderer72")
 			.applicationVersion(0, 1, 0, 0)
 			.engineName("Engine72")
 			.engineVersion(0, 1, 0, 0)
-			.apiVersion(VK_API_VERSION_1_0);
+			.apiVersion(0, 1, 0, 0);
 		if (enableValidation)
 			builder.useDefaultDebugUtilsMessenger();
-		this->instance = builder.build();
-	}
-
-	// Init vulkan loader
-	if (enableValidation) {
-		this->loader.load(this->instance.get(), VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-	}
-
-	// Create window surface
-	if (!this->offscreen)
-		JJYOU_VK_UTILS_CHECK(glfwCreateWindowSurface(this->instance.get(), this->window, nullptr, &this->surface));
-
-	// Pick physical device
-	{
-		jjyou::vk::PhysicalDeviceSelector selector(this->instance, this->surface);
-		if (physicalDeviceName.has_value()) {
-			selector
-				.requireDeviceName(*physicalDeviceName)
-				//.requestDedicated()
-				.requireGraphicsQueue(true)
-				.requireComputeQueue(false)
-				//.requireDistinctTransferQueue(true)
-				.enableDeviceFeatures(
-					VkPhysicalDeviceFeatures{
-						.samplerAnisotropy = true
-					}
-			);
+		if (!this->offscreen) {
+			std::uint32_t count;
+			const char** instanceExtensions = glfwGetRequiredInstanceExtensions(&count);
+			builder.enableInstanceExtensions(instanceExtensions, instanceExtensions + count);
 		}
-		else {
-			selector
-				.requestDedicated()
-				.requireGraphicsQueue(true)
-				.requireComputeQueue(false)
-				.requireDistinctTransferQueue(true)
-				.enableDeviceFeatures(
-					VkPhysicalDeviceFeatures{
-						.samplerAnisotropy = true
-					}
-			);
+		builder.buildInstance(this->context);
+		// Surface
+		if (!this->offscreen) {
+			VkSurfaceKHR vkSurface{ nullptr };
+			JJYOU_VK_UTILS_CHECK(glfwCreateWindowSurface(*this->context.instance(), this->window, nullptr, &vkSurface));
+			this->surface = vk::raii::SurfaceKHR(this->context.instance(), vkSurface);
 		}
-		
-		this->physicalDevice = selector.select();
-	}
-
-	// Create logical device
-	{
-		jjyou::vk::DeviceBuilder builder(this->instance, this->physicalDevice);
-		this->device = builder.build();
+		// Physical device
+		builder
+			.requestPhysicalDeviceType(vk::PhysicalDeviceType::eDiscreteGpu)
+			.addSurface(this->surface)
+			.requirePhysicalDeviceFeatures(
+				VkPhysicalDeviceFeatures{
+					.geometryShader = true,
+					.samplerAnisotropy = true,
+				}
+		);
+		if (physicalDeviceName.has_value())
+			builder.addPhysicalDeviceSelectionCriteria(
+				[&](const jjyou::vk::PhysicalDeviceInfo& info)->bool {
+					return (info.physicalDevice.getProperties().deviceName == physicalDeviceName);
+				}
+			);
+		builder.selectPhysicalDevice(this->context);
+		// Device
+		builder.buildDevice(this->context);
 	}
 
 	// Create command pool
@@ -93,18 +77,18 @@ Engine::Engine(
 			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
 			.pNext = nullptr,
 			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-			.queueFamilyIndex = *physicalDevice.graphicsQueueFamily()
+			.queueFamilyIndex = *this->context.queueFamilyIndex(jjyou::vk::Context::QueueType::Main)
 		};
-		JJYOU_VK_UTILS_CHECK(vkCreateCommandPool(this->device.get(), &poolInfo, nullptr, &this->graphicsCommandPool));
+		JJYOU_VK_UTILS_CHECK(vkCreateCommandPool(*this->context.device(), &poolInfo, nullptr, &this->graphicsCommandPool));
 	}
 	{
 		VkCommandPoolCreateInfo poolInfo{
 			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
 			.pNext = nullptr,
 			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-			.queueFamilyIndex = *physicalDevice.transferQueueFamily()
+			.queueFamilyIndex = *this->context.queueFamilyIndex(jjyou::vk::Context::QueueType::Transfer)
 		};
-		JJYOU_VK_UTILS_CHECK(vkCreateCommandPool(this->device.get(), &poolInfo, nullptr, &this->transferCommandPool));
+		JJYOU_VK_UTILS_CHECK(vkCreateCommandPool(*this->context.device(), &poolInfo, nullptr, &this->transferCommandPool));
 	}
 
 	// Create command buffers
@@ -116,23 +100,22 @@ Engine::Engine(
 			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
 			.commandBufferCount = static_cast<uint32_t>(graphicsCommandBuffers.size()),
 		};
-		JJYOU_VK_UTILS_CHECK(vkAllocateCommandBuffers(this->device.get(), &allocInfo, graphicsCommandBuffers.data()));
+		JJYOU_VK_UTILS_CHECK(vkAllocateCommandBuffers(*this->context.device(), &allocInfo, graphicsCommandBuffers.data()));
 		for (size_t i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; i++) {
 			this->frameData[i].graphicsCommandBuffer = graphicsCommandBuffers[i];
 		}
 	}
 
 	// Init memory allocator
-	this->allocator.init(this->device);
+	this->allocator.init(*this->context.device());
 
 	// Create swap chain
 	if (!this->offscreen) {
 		this->createSwapchain();
 	}
 	else {
-		this->virtualSwapchain.create(
-			this->physicalDevice,
-			this->device,
+		this->virtualSwapchain = VirtualSwapchain(
+			this->context,
 			this->allocator,
 			3,
 			VK_FORMAT_R8G8B8A8_SRGB,
@@ -143,11 +126,78 @@ Engine::Engine(
 	// Create depth image
 	this->createDepthImage();
 
+	// Create shadow mapping renderpass
+	{
+		VkAttachmentDescription depthAttachment{
+			.flags = 0,
+			.format = VK_FORMAT_D32_SFLOAT,
+			.samples = VK_SAMPLE_COUNT_1_BIT,
+			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+			.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+		};
+
+		VkAttachmentReference depthAttachmentRef{
+			.attachment = 0,
+			.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+		};
+
+		VkSubpassDescription subpass{
+			.flags = 0,
+			.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+			.inputAttachmentCount = 0,
+			.pInputAttachments = nullptr,
+			.colorAttachmentCount = 0,
+			.pColorAttachments = nullptr,
+			.pResolveAttachments = nullptr,
+			.pDepthStencilAttachment = &depthAttachmentRef,
+			.preserveAttachmentCount = 0,
+			.pPreserveAttachments = nullptr
+		};
+
+		std::vector<VkSubpassDependency> dependencies = {
+			VkSubpassDependency{
+				.srcSubpass = VK_SUBPASS_EXTERNAL,
+				.dstSubpass = 0,
+				.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+				.srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+				.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+				.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
+			},
+			VkSubpassDependency{
+				.srcSubpass = 0,
+				.dstSubpass = VK_SUBPASS_EXTERNAL,
+				.srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+				.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+				.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+				.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
+			}
+		};
+		std::vector<VkAttachmentDescription> attachments = { depthAttachment };
+		VkRenderPassCreateInfo renderPassInfo{
+			.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+			.pNext = nullptr,
+			.flags = 0,
+			.attachmentCount = static_cast<std::uint32_t>(attachments.size()),
+			.pAttachments = attachments.data(),
+			.subpassCount = 1,
+			.pSubpasses = &subpass,
+			.dependencyCount = static_cast<std::uint32_t>(dependencies.size()),
+			.pDependencies = dependencies.data()
+		};
+		this->shadowMappingRenderPass = this->context.device().createRenderPass(renderPassInfo);
+	}
+
 	// Create renderpass
 	{
 		VkAttachmentDescription colorAttachment{
 			.flags = 0,
-			.format = (this->offscreen) ? this->virtualSwapchain.format() : this->swapchain.surfaceFormat().format,
+			.format = (this->offscreen) ? this->virtualSwapchain.format() : static_cast<VkFormat>(this->swapchain.surfaceFormat().format),
 			.samples = VK_SAMPLE_COUNT_1_BIT,
 			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -192,15 +242,27 @@ Engine::Engine(
 			.pPreserveAttachments = nullptr
 		};
 
-		VkSubpassDependency dependency{
-			.srcSubpass = VK_SUBPASS_EXTERNAL,
-			.dstSubpass = 0,
-			.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-			.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-			.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-			.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-			.dependencyFlags = 0
+		std::vector<VkSubpassDependency> dependencies = {
+			VkSubpassDependency {
+				.srcSubpass = VK_SUBPASS_EXTERNAL,
+				.dstSubpass = 0,
+				.srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+				.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+				.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+				.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+				.dependencyFlags = 0
+			},
+			VkSubpassDependency {
+				.srcSubpass = VK_SUBPASS_EXTERNAL,
+				.dstSubpass = 0,
+				.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+				.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+				.srcAccessMask = 0,
+				.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+				.dependencyFlags = 0
+			}
 		};
+
 		std::array<VkAttachmentDescription, 2> attachments = { colorAttachment, depthAttachment };
 		VkRenderPassCreateInfo renderPassInfo{
 			.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
@@ -210,11 +272,11 @@ Engine::Engine(
 			.pAttachments = attachments.data(),
 			.subpassCount = 1,
 			.pSubpasses = &subpass,
-			.dependencyCount = 1,
-			.pDependencies = &dependency
+			.dependencyCount = static_cast<uint32_t>(dependencies.size()),
+			.pDependencies = dependencies.data()
 		};
 
-		JJYOU_VK_UTILS_CHECK(vkCreateRenderPass(this->device.get(), &renderPassInfo, nullptr, &this->renderPass));
+		JJYOU_VK_UTILS_CHECK(vkCreateRenderPass(*this->context.device(), &renderPassInfo, nullptr, &this->renderPass));
 	}
 
 	// Create framebuffer
@@ -229,7 +291,28 @@ Engine::Engine(
 			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			.pImmutableSamplers = nullptr
 		};
-		std::vector<VkDescriptorSetLayoutBinding> bindings = { viewLevelUniformLayoutBinding };
+		VkDescriptorSetLayoutBinding lightsStorageBufferUniformBinding{
+			.binding = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding spotShadowMapSamplerUniformBinding{
+			.binding = 2,
+			.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding spotShadowMapsUniformBinding{
+			.binding = 3,
+			.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+			.descriptorCount = Engine::MAX_NUM_SPOT_LIGHTS,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		std::vector<VkDescriptorSetLayoutBinding> bindings = { viewLevelUniformLayoutBinding, lightsStorageBufferUniformBinding, spotShadowMapSamplerUniformBinding, spotShadowMapsUniformBinding };
 		VkDescriptorSetLayoutCreateInfo layoutInfo{
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 			.pNext = nullptr,
@@ -237,7 +320,7 @@ Engine::Engine(
 			.bindingCount = static_cast<uint32_t>(bindings.size()),
 			.pBindings = bindings.data()
 		};
-		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(this->device.get(), &layoutInfo, nullptr, &this->viewLevelUniformDescriptorSetLayout));
+		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(*this->context.device(), &layoutInfo, nullptr, &this->viewLevelUniformDescriptorSetLayout));
 	}
 	{
 		VkDescriptorSetLayoutBinding objectLevelUniformLayoutBinding{
@@ -255,7 +338,7 @@ Engine::Engine(
 			.bindingCount = static_cast<uint32_t>(bindings.size()),
 			.pBindings = bindings.data()
 		};
-		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(this->device.get(), &layoutInfo, nullptr, &this->objectLevelUniformDescriptorSetLayout));
+		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(*this->context.device(), &layoutInfo, nullptr, &this->objectLevelUniformDescriptorSetLayout));
 	}
 	{
 		VkDescriptorSetLayoutBinding skyboxModelUniformBinding{
@@ -294,7 +377,7 @@ Engine::Engine(
 			.bindingCount = static_cast<uint32_t>(bindings.size()),
 			.pBindings = bindings.data()
 		};
-		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(this->device.get(), &layoutInfo, nullptr, &this->skyboxUniformDescriptorSetLayout));
+		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(*this->context.device(), &layoutInfo, nullptr, &this->skyboxUniformDescriptorSetLayout));
 	}
 	{
 		VkDescriptorSetLayoutBinding mirrorNormalMapSamplerBinding{
@@ -319,7 +402,7 @@ Engine::Engine(
 			.bindingCount = static_cast<uint32_t>(bindings.size()),
 			.pBindings = bindings.data()
 		};
-		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(this->device.get(), &layoutInfo, nullptr, &this->mirrorMaterialLevelUniformDescriptorSetLayout));
+		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(*this->context.device(), &layoutInfo, nullptr, &this->mirrorMaterialLevelUniformDescriptorSetLayout));
 	}
 	{
 		VkDescriptorSetLayoutBinding environmentNormalMapSamplerBinding{
@@ -344,7 +427,7 @@ Engine::Engine(
 			.bindingCount = static_cast<uint32_t>(bindings.size()),
 			.pBindings = bindings.data()
 		};
-		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(this->device.get(), &layoutInfo, nullptr, &this->environmentMaterialLevelUniformDescriptorSetLayout));
+		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(*this->context.device(), &layoutInfo, nullptr, &this->environmentMaterialLevelUniformDescriptorSetLayout));
 	}
 	{
 		VkDescriptorSetLayoutBinding lambertianNormalMapSamplerBinding{
@@ -376,7 +459,7 @@ Engine::Engine(
 			.bindingCount = static_cast<uint32_t>(bindings.size()),
 			.pBindings = bindings.data()
 		};
-		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(this->device.get(), &layoutInfo, nullptr, &this->lambertianMaterialLevelUniformDescriptorSetLayout));
+		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(*this->context.device(), &layoutInfo, nullptr, &this->lambertianMaterialLevelUniformDescriptorSetLayout));
 	}
 	{
 		VkDescriptorSetLayoutBinding pbrNormalMapSamplerBinding{
@@ -422,7 +505,7 @@ Engine::Engine(
 			.bindingCount = static_cast<uint32_t>(bindings.size()),
 			.pBindings = bindings.data()
 		};
-		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(this->device.get(), &layoutInfo, nullptr, &this->pbrMaterialLevelUniformDescriptorSetLayout));
+		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(*this->context.device(), &layoutInfo, nullptr, &this->pbrMaterialLevelUniformDescriptorSetLayout));
 	}
 
 	// Create sync objects
@@ -438,9 +521,9 @@ Engine::Engine(
 			.flags = VK_FENCE_CREATE_SIGNALED_BIT
 		};
 		for (size_t i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; i++) {
-			JJYOU_VK_UTILS_CHECK(vkCreateSemaphore(this->device.get(), &semaphoreInfo, nullptr, &this->frameData[i].imageAvailableSemaphore));
-			JJYOU_VK_UTILS_CHECK(vkCreateSemaphore(this->device.get(), &semaphoreInfo, nullptr, &this->frameData[i].renderFinishedSemaphore));
-			JJYOU_VK_UTILS_CHECK(vkCreateFence(this->device.get(), &fenceInfo, nullptr, &this->frameData[i].inFlightFence));
+			JJYOU_VK_UTILS_CHECK(vkCreateSemaphore(*this->context.device(), &semaphoreInfo, nullptr, &this->frameData[i].imageAvailableSemaphore));
+			JJYOU_VK_UTILS_CHECK(vkCreateSemaphore(*this->context.device(), &semaphoreInfo, nullptr, &this->frameData[i].renderFinishedSemaphore));
+			JJYOU_VK_UTILS_CHECK(vkCreateFence(*this->context.device(), &fenceInfo, nullptr, &this->frameData[i].inFlightFence));
 		}
 	}
 
@@ -453,39 +536,51 @@ Engine::Engine(
 			.flags = 0,
 			.setLayoutCount = 0, // To set
 			.pSetLayouts = nullptr, // To set
-			.pushConstantRangeCount = 0,
-			.pPushConstantRanges = nullptr
+			.pushConstantRangeCount = 0, // To set
+			.pPushConstantRanges = nullptr // To set
 		};
 
 		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout };
 		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
 		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
-		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(this->device.get(), &pipelineLayoutInfo, nullptr, &this->simplePipelineLayout));
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->simplePipelineLayout));
 
 		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout, this->mirrorMaterialLevelUniformDescriptorSetLayout, this->skyboxUniformDescriptorSetLayout };
 		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
 		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
-		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(this->device.get(), &pipelineLayoutInfo, nullptr, &this->mirrorPipelineLayout));
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->mirrorPipelineLayout));
 
 		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout, this->environmentMaterialLevelUniformDescriptorSetLayout, this->skyboxUniformDescriptorSetLayout };
 		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
 		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
-		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(this->device.get(), &pipelineLayoutInfo, nullptr, &this->environmentPipelineLayout));
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->environmentPipelineLayout));
 
 		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout, this->lambertianMaterialLevelUniformDescriptorSetLayout, this->skyboxUniformDescriptorSetLayout };
 		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
 		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
-		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(this->device.get(), &pipelineLayoutInfo, nullptr, &this->lambertianPipelineLayout));
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->lambertianPipelineLayout));
 
 		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout, this->pbrMaterialLevelUniformDescriptorSetLayout, this->skyboxUniformDescriptorSetLayout };
 		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
 		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
-		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(this->device.get(), &pipelineLayoutInfo, nullptr, &this->pbrPipelineLayout));
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->pbrPipelineLayout));
 
 		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->skyboxUniformDescriptorSetLayout };
 		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
 		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
-		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(this->device.get(), &pipelineLayoutInfo, nullptr, &this->skyboxPipelineLayout));
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->skyboxPipelineLayout));
+
+		setLayouts = { this->objectLevelUniformDescriptorSetLayout };
+		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
+		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
+		pipelineLayoutInfo.pushConstantRangeCount = 1U;
+		VkPushConstantRange spotLightShadowMapPushConstantRange{
+			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+			.offset = 0U,
+			.size = sizeof(jjyou::glsl::mat4)
+		};
+		pipelineLayoutInfo.pPushConstantRanges = &spotLightShadowMapPushConstantRange;
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->spotlightPipelineLayout));
 	}
 
 	// Create graphics pipeline
@@ -502,6 +597,7 @@ Engine::Engine(
 		VkShaderModule pbrFragShaderModule = this->createShaderModule("../spv/renderer/shader/pbr.frag.spv");
 		VkShaderModule skyboxVertShaderModule = this->createShaderModule("../spv/renderer/shader/skybox.vert.spv");
 		VkShaderModule skyboxFragShaderModule = this->createShaderModule("../spv/renderer/shader/skybox.frag.spv");
+		VkShaderModule spotlightVertShaderModule = this->createShaderModule("../spv/renderer/shader/spotlight.vert.spv");
 
 		std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages = { {
 			VkPipelineShaderStageCreateInfo{
@@ -734,7 +830,7 @@ Engine::Engine(
 		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(simpleAttributeDescriptions.size());
 		vertexInputInfo.pVertexAttributeDescriptions = simpleAttributeDescriptions.data();
 		pipelineInfo.layout = this->simplePipelineLayout;
-		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(this->device.get(), nullptr, 1, &pipelineInfo, nullptr, &this->simplePipeline));
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->simplePipeline));
 
 		shaderStages[0].module = mirrorVertShaderModule;
 		shaderStages[1].module = mirrorFragShaderModule;
@@ -743,7 +839,7 @@ Engine::Engine(
 		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(materialAttributeDescriptions.size());
 		vertexInputInfo.pVertexAttributeDescriptions = materialAttributeDescriptions.data();
 		pipelineInfo.layout = this->mirrorPipelineLayout;
-		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(this->device.get(), nullptr, 1, &pipelineInfo, nullptr, &this->mirrorPipeline));
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->mirrorPipeline));
 
 		shaderStages[0].module = environmentVertShaderModule;
 		shaderStages[1].module = environmentFragShaderModule;
@@ -752,7 +848,7 @@ Engine::Engine(
 		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(materialAttributeDescriptions.size());
 		vertexInputInfo.pVertexAttributeDescriptions = materialAttributeDescriptions.data();
 		pipelineInfo.layout = this->environmentPipelineLayout;
-		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(this->device.get(), nullptr, 1, &pipelineInfo, nullptr, &this->environmentPipeline));
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->environmentPipeline));
 
 		shaderStages[0].module = lambertianVertShaderModule;
 		shaderStages[1].module = lambertianFragShaderModule;
@@ -761,7 +857,7 @@ Engine::Engine(
 		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(materialAttributeDescriptions.size());
 		vertexInputInfo.pVertexAttributeDescriptions = materialAttributeDescriptions.data();
 		pipelineInfo.layout = this->lambertianPipelineLayout;
-		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(this->device.get(), nullptr, 1, &pipelineInfo, nullptr, &this->lambertianPipeline));
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->lambertianPipeline));
 
 		shaderStages[0].module = pbrVertShaderModule;
 		shaderStages[1].module = pbrFragShaderModule;
@@ -770,7 +866,7 @@ Engine::Engine(
 		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(materialAttributeDescriptions.size());
 		vertexInputInfo.pVertexAttributeDescriptions = materialAttributeDescriptions.data();
 		pipelineInfo.layout = this->pbrPipelineLayout;
-		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(this->device.get(), nullptr, 1, &pipelineInfo, nullptr, &this->pbrPipeline));
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->pbrPipeline));
 
 		shaderStages[0].module = skyboxVertShaderModule;
 		shaderStages[1].module = skyboxFragShaderModule;
@@ -779,77 +875,93 @@ Engine::Engine(
 		vertexInputInfo.vertexAttributeDescriptionCount = 0;
 		vertexInputInfo.pVertexAttributeDescriptions = nullptr;
 		pipelineInfo.layout = this->skyboxPipelineLayout;
-		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(this->device.get(), nullptr, 1, &pipelineInfo, nullptr, &this->skyboxPipeline));
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->skyboxPipeline));
 
-		vkDestroyShaderModule(this->device.get(), simpleVertShaderModule, nullptr);
-		vkDestroyShaderModule(this->device.get(), simpleFragShaderModule, nullptr);
-		vkDestroyShaderModule(this->device.get(), mirrorVertShaderModule, nullptr);
-		vkDestroyShaderModule(this->device.get(), mirrorFragShaderModule, nullptr);
-		vkDestroyShaderModule(this->device.get(), environmentVertShaderModule, nullptr);
-		vkDestroyShaderModule(this->device.get(), environmentFragShaderModule, nullptr);
-		vkDestroyShaderModule(this->device.get(), lambertianVertShaderModule, nullptr);
-		vkDestroyShaderModule(this->device.get(), lambertianFragShaderModule, nullptr);
-		vkDestroyShaderModule(this->device.get(), pbrVertShaderModule, nullptr);
-		vkDestroyShaderModule(this->device.get(), pbrFragShaderModule, nullptr);
-		vkDestroyShaderModule(this->device.get(), skyboxVertShaderModule, nullptr);
-		vkDestroyShaderModule(this->device.get(), skyboxFragShaderModule, nullptr);
+		shaderStages[0].module = spotlightVertShaderModule;
+		pipelineInfo.stageCount = 1;
+		vertexInputInfo.vertexBindingDescriptionCount = 1;
+		vertexInputInfo.pVertexBindingDescriptions = &materialVertexBindingDescription;
+		vertexInputInfo.vertexAttributeDescriptionCount = 1; // Only position is needed
+		vertexInputInfo.pVertexAttributeDescriptions = &materialAttributeDescriptions[0];
+		pipelineInfo.layout = this->spotlightPipelineLayout;
+		pipelineInfo.renderPass = *this->shadowMappingRenderPass;
+		rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT; // Front face culling
+		rasterizer.depthBiasEnable = VK_TRUE; // Enable depth bias
+		dynamicStates.push_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
+		dynamicState = VkPipelineDynamicStateCreateInfo{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+			.pNext = nullptr,
+			.flags = 0,
+			.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
+			.pDynamicStates = dynamicStates.data()
+		};
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->spotlightPipeline));
+
+		vkDestroyShaderModule(*this->context.device(), simpleVertShaderModule, nullptr);
+		vkDestroyShaderModule(*this->context.device(), simpleFragShaderModule, nullptr);
+		vkDestroyShaderModule(*this->context.device(), mirrorVertShaderModule, nullptr);
+		vkDestroyShaderModule(*this->context.device(), mirrorFragShaderModule, nullptr);
+		vkDestroyShaderModule(*this->context.device(), environmentVertShaderModule, nullptr);
+		vkDestroyShaderModule(*this->context.device(), environmentFragShaderModule, nullptr);
+		vkDestroyShaderModule(*this->context.device(), lambertianVertShaderModule, nullptr);
+		vkDestroyShaderModule(*this->context.device(), lambertianFragShaderModule, nullptr);
+		vkDestroyShaderModule(*this->context.device(), pbrVertShaderModule, nullptr);
+		vkDestroyShaderModule(*this->context.device(), pbrFragShaderModule, nullptr);
+		vkDestroyShaderModule(*this->context.device(), skyboxVertShaderModule, nullptr);
+		vkDestroyShaderModule(*this->context.device(), skyboxFragShaderModule, nullptr);
+		vkDestroyShaderModule(*this->context.device(), spotlightVertShaderModule, nullptr);
 	}
 }
 
 Engine::~Engine(void) {
 
-	vkDeviceWaitIdle(this->device.get());
+	vkDeviceWaitIdle(*this->context.device());
 
 	//Destroy pipeline and pipeline layout
-	vkDestroyPipeline(this->device.get(), this->simplePipeline, nullptr);
-	vkDestroyPipelineLayout(this->device.get(), this->simplePipelineLayout, nullptr);
-	vkDestroyPipeline(this->device.get(), this->mirrorPipeline, nullptr);
-	vkDestroyPipelineLayout(this->device.get(), this->mirrorPipelineLayout, nullptr);
-	vkDestroyPipeline(this->device.get(), this->environmentPipeline, nullptr);
-	vkDestroyPipelineLayout(this->device.get(), this->environmentPipelineLayout, nullptr);
-	vkDestroyPipeline(this->device.get(), this->lambertianPipeline, nullptr);
-	vkDestroyPipelineLayout(this->device.get(), this->lambertianPipelineLayout, nullptr);
-	vkDestroyPipeline(this->device.get(), this->pbrPipeline, nullptr);
-	vkDestroyPipelineLayout(this->device.get(), this->pbrPipelineLayout, nullptr);
-	vkDestroyPipeline(this->device.get(), this->skyboxPipeline, nullptr);
-	vkDestroyPipelineLayout(this->device.get(), this->skyboxPipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->simplePipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->simplePipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->mirrorPipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->mirrorPipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->environmentPipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->environmentPipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->lambertianPipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->lambertianPipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->pbrPipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->pbrPipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->skyboxPipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->skyboxPipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->spotlightPipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->spotlightPipelineLayout, nullptr);
 
 	// Destroy sync objects
 	for (size_t i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; i++) {
-		vkDestroySemaphore(this->device.get(), this->frameData[i].imageAvailableSemaphore, nullptr);
-		vkDestroySemaphore(this->device.get(), this->frameData[i].renderFinishedSemaphore, nullptr);
-		vkDestroyFence(this->device.get(), this->frameData[i].inFlightFence, nullptr);
+		vkDestroySemaphore(*this->context.device(), this->frameData[i].imageAvailableSemaphore, nullptr);
+		vkDestroySemaphore(*this->context.device(), this->frameData[i].renderFinishedSemaphore, nullptr);
+		vkDestroyFence(*this->context.device(), this->frameData[i].inFlightFence, nullptr);
 	}
 
 	// Destroy descriptor layout
-	vkDestroyDescriptorSetLayout(this->device.get(), this->viewLevelUniformDescriptorSetLayout, nullptr);
-	vkDestroyDescriptorSetLayout(this->device.get(), this->objectLevelUniformDescriptorSetLayout, nullptr);
-	vkDestroyDescriptorSetLayout(this->device.get(), this->skyboxUniformDescriptorSetLayout, nullptr);
-	vkDestroyDescriptorSetLayout(this->device.get(), this->mirrorMaterialLevelUniformDescriptorSetLayout, nullptr);
-	vkDestroyDescriptorSetLayout(this->device.get(), this->environmentMaterialLevelUniformDescriptorSetLayout, nullptr);
-	vkDestroyDescriptorSetLayout(this->device.get(), this->lambertianMaterialLevelUniformDescriptorSetLayout, nullptr);
-	vkDestroyDescriptorSetLayout(this->device.get(), this->pbrMaterialLevelUniformDescriptorSetLayout, nullptr);
+	vkDestroyDescriptorSetLayout(*this->context.device(), this->viewLevelUniformDescriptorSetLayout, nullptr);
+	vkDestroyDescriptorSetLayout(*this->context.device(), this->objectLevelUniformDescriptorSetLayout, nullptr);
+	vkDestroyDescriptorSetLayout(*this->context.device(), this->skyboxUniformDescriptorSetLayout, nullptr);
+	vkDestroyDescriptorSetLayout(*this->context.device(), this->mirrorMaterialLevelUniformDescriptorSetLayout, nullptr);
+	vkDestroyDescriptorSetLayout(*this->context.device(), this->environmentMaterialLevelUniformDescriptorSetLayout, nullptr);
+	vkDestroyDescriptorSetLayout(*this->context.device(), this->lambertianMaterialLevelUniformDescriptorSetLayout, nullptr);
+	vkDestroyDescriptorSetLayout(*this->context.device(), this->pbrMaterialLevelUniformDescriptorSetLayout, nullptr);
 
 	// Destroy frame buffers
 	for (int i = 0; i < this->framebuffers.size(); ++i) {
-		vkDestroyFramebuffer(this->device.get(), this->framebuffers[i], nullptr);
+		vkDestroyFramebuffer(*this->context.device(), this->framebuffers[i], nullptr);
 	}
 
 	// Destroy render pass
-	vkDestroyRenderPass(this->device.get(), this->renderPass, nullptr);
+	vkDestroyRenderPass(*this->context.device(), this->renderPass, nullptr);
+	this->shadowMappingRenderPass.clear();
 
 	// Destroy depth image
-	vkDestroyImageView(this->device.get(), this->depthImageView, nullptr);
-	vkDestroyImage(this->device.get(), this->depthImage, nullptr);
+	vkDestroyImageView(*this->context.device(), this->depthImageView, nullptr);
+	vkDestroyImage(*this->context.device(), this->depthImage, nullptr);
 	this->allocator.free(this->depthImageMemory);
-
-	// Destroy swapchain
-	if (!this->offscreen) {
-		this->swapchain.destroy();
-	}
-	else {
-		this->virtualSwapchain.destroy();
-	}
 
 	// Destroy allocator
 	this->allocator.destory();
@@ -857,18 +969,8 @@ Engine::~Engine(void) {
 	// Command buffers will be destroyed along with the command pool
 
 	// Destroy command pool
-	vkDestroyCommandPool(this->device.get(), this->graphicsCommandPool, nullptr);
-	vkDestroyCommandPool(this->device.get(), this->transferCommandPool, nullptr);
-
-	// Destroy logical device
-	this->device.destroy();
-
-	// Destroy window surface
-	if (!this->offscreen)
-		vkDestroySurfaceKHR(this->instance.get(), this->surface, nullptr);
-
-	// Destroy vulkan instance
-	this->instance.destroy();
+	vkDestroyCommandPool(*this->context.device(), this->graphicsCommandPool, nullptr);
+	vkDestroyCommandPool(*this->context.device(), this->transferCommandPool, nullptr);
 
 	// Destroy glfw window
 	if (!this->offscreen) {
@@ -878,18 +980,14 @@ Engine::~Engine(void) {
 }
 
 void Engine::createSwapchain(void) {
-	jjyou::vk::SwapchainBuilder builder(this->physicalDevice, this->device, this->surface);
+	jjyou::vk::SwapchainBuilder builder(this->context, this->surface);
 	builder
-		.useDefaultMinImageCount()
-		.preferSurfaceFormat(VkSurfaceFormatKHR{ .format = VK_FORMAT_B8G8R8A8_SRGB , .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR })
-		.preferPresentMode(VK_PRESENT_MODE_MAILBOX_KHR)
-		.useDefaultExtent()
-		.imageArrayLayers(1)
-		.imageUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
-		.compositeAlpha(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
-		.clipped(true)
+		.requestSurfaceFormat(VkSurfaceFormatKHR{ .format = VK_FORMAT_B8G8R8A8_SRGB , .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR })
+		.requestPresentMode(::vk::PresentModeKHR::eMailbox)
 		.oldSwapchain(nullptr);
-	this->swapchain = builder.build();
+	int width, height;
+	glfwGetFramebufferSize(this->window, &width, &height);
+	this->swapchain = builder.build(vk::Extent2D(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)));
 }
 
 void Engine::createFramebuffers(void) {
@@ -897,7 +995,7 @@ void Engine::createFramebuffers(void) {
 		this->framebuffers.resize(this->swapchain.imageCount());
 		for (size_t i = 0; i < this->framebuffers.size(); i++) {
 			std::array<VkImageView, 2> attachments = {
-				this->swapchain.imageViews()[i],
+				*this->swapchain.imageView(i),
 				this->depthImageView
 			};
 
@@ -912,7 +1010,7 @@ void Engine::createFramebuffers(void) {
 				.height = this->swapchain.extent().height,
 				.layers = 1
 			};
-			JJYOU_VK_UTILS_CHECK(vkCreateFramebuffer(this->device.get(), &framebufferInfo, nullptr, &this->framebuffers[i]));
+			JJYOU_VK_UTILS_CHECK(vkCreateFramebuffer(*this->context.device(), &framebufferInfo, nullptr, &this->framebuffers[i]));
 		}
 	}
 	else {
@@ -934,24 +1032,25 @@ void Engine::createFramebuffers(void) {
 				.height = this->virtualSwapchain.extent().height,
 				.layers = 1
 			};
-			JJYOU_VK_UTILS_CHECK(vkCreateFramebuffer(this->device.get(), &framebufferInfo, nullptr, &this->framebuffers[i]));
+			JJYOU_VK_UTILS_CHECK(vkCreateFramebuffer(*this->context.device(), &framebufferInfo, nullptr, &this->framebuffers[i]));
 		}
 	}
 }
 
 void Engine::createDepthImage(void) {
-	this->depthImageFormat = this->physicalDevice.findSupportedFormat(
-		{ VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT },
-		VK_IMAGE_TILING_OPTIMAL,
-		VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
-	);
-	VkExtent2D extent = (this->offscreen) ? this->virtualSwapchain.extent() : this->swapchain.extent();
+	this->depthImageFormat = VK_FORMAT_D32_SFLOAT;
+	/*static_cast<VkFormat>(this->context.findSupportedFormat(
+		{ vk::Format::eD32Sfloat, vk::Format::eD32SfloatS8Uint, vk::Format::eD24UnormS8Uint },
+		vk::ImageTiling::eOptimal,
+		vk::FormatFeatureFlagBits::eDepthStencilAttachment
+	));*/
+	VkExtent2D extent = (this->offscreen) ? this->virtualSwapchain.extent() : static_cast<VkExtent2D>(this->swapchain.extent());
 	std::tie(this->depthImage, this->depthImageMemory) = this->createImage(
 		extent.width, extent.height,
 		this->depthImageFormat,
 		VK_IMAGE_TILING_OPTIMAL,
 		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-		{ *this->physicalDevice.graphicsQueueFamily() },
+		{ *this->context.queueFamilyIndex(jjyou::vk::Context::QueueType::Main) },
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
 	);
 	this->depthImageView = this->createImageView(this->depthImage, this->depthImageFormat, VK_IMAGE_ASPECT_DEPTH_BIT);

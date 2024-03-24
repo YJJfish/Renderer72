@@ -1,22 +1,18 @@
 #include "VirtualSwapchain.hpp"
 
-void VirtualSwapchain::create(
-	const jjyou::vk::PhysicalDevice& physicalDevice,
-	const jjyou::vk::Device& device,
+VirtualSwapchain::VirtualSwapchain(
+	const jjyou::vk::Context& context,
 	jjyou::vk::MemoryAllocator& allocator,
 	std::uint32_t imageCount,
 	VkFormat format,
 	VkExtent2D imageExtent
-) {
-	this->device = &device;
-	this->allocator = &allocator;
-	this->_format = format;
-	this->_extent = imageExtent;
+) : _pContext(&context), allocator(&allocator), _format(format), _extent(imageExtent)
+{
 	this->swapchainImages.resize(imageCount);
 	this->swapchainImageMemories.resize(imageCount);
 	this->swapchainImageViews.resize(imageCount);
 	this->currentImageIdx = 0;
-	std::vector<std::uint32_t> queueFamilyIndices = { *physicalDevice.graphicsQueueFamily(), *physicalDevice.transferQueueFamily() };
+	std::vector<std::uint32_t> queueFamilyIndices = { *context.queueFamilyIndex(jjyou::vk::Context::QueueType::Main), *context.queueFamilyIndex(jjyou::vk::Context::QueueType::Transfer) };
 	if (queueFamilyIndices[0] == queueFamilyIndices[1])
 		queueFamilyIndices.pop_back();
 	for (std::uint32_t i = 0; i < imageCount; ++i) {
@@ -41,17 +37,17 @@ void VirtualSwapchain::create(
 			.pQueueFamilyIndices = queueFamilyIndices.data(),
 			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
 		};
-		JJYOU_VK_UTILS_CHECK(vkCreateImage(this->device->get(), &imageInfo, nullptr, &this->swapchainImages[i]));
+		JJYOU_VK_UTILS_CHECK(vkCreateImage(*this->_pContext->device(), &imageInfo, nullptr, &this->swapchainImages[i]));
 		VkMemoryRequirements memRequirements;
-		vkGetImageMemoryRequirements(this->device->get(), this->swapchainImages[i], &memRequirements);
+		vkGetImageMemoryRequirements(*this->_pContext->device(), this->swapchainImages[i], &memRequirements);
 		VkMemoryAllocateInfo allocInfo{
 			.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 			.pNext = nullptr,
 			.allocationSize = memRequirements.size,
-			.memoryTypeIndex = physicalDevice.findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT).value()
+			.memoryTypeIndex = this->_pContext->findMemoryType(memRequirements.memoryTypeBits, ::vk::MemoryPropertyFlagBits::eDeviceLocal).value()
 		};
 		JJYOU_VK_UTILS_CHECK(this->allocator->allocate(&allocInfo, this->swapchainImageMemories[i]));
-		vkBindImageMemory(this->device->get(), this->swapchainImages[i], this->swapchainImageMemories[i].memory(), this->swapchainImageMemories[i].offset());
+		vkBindImageMemory(*this->_pContext->device(), this->swapchainImages[i], this->swapchainImageMemories[i].memory(), this->swapchainImageMemories[i].offset());
 		VkImageViewCreateInfo viewInfo{
 			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 			.pNext = nullptr,
@@ -72,25 +68,7 @@ void VirtualSwapchain::create(
 				.layerCount = 1
 			}
 		};
-		JJYOU_VK_UTILS_CHECK(vkCreateImageView(this->device->get(), &viewInfo, nullptr, &this->swapchainImageViews[i]));
-	}
-}
-
-
-void VirtualSwapchain::destroy(void) {
-	if (this->device != nullptr) {
-		for (std::uint32_t i = 0; i < this->swapchainImages.size(); ++i) {
-			vkDestroyImageView(this->device->get(), this->swapchainImageViews[i], nullptr);
-			this->allocator->free(this->swapchainImageMemories[i]);
-			vkDestroyImage(this->device->get(), this->swapchainImages[i], nullptr);
-		}
-		this->swapchainImages.clear();
-		this->swapchainImageMemories.clear();
-		this->swapchainImageViews.clear();
-		this->allocator = nullptr;
-		this->device = nullptr;
-		this->_format = VK_FORMAT_UNDEFINED;
-		this->_extent = { .width = 0, .height = 0 };
+		JJYOU_VK_UTILS_CHECK(vkCreateImageView(*this->_pContext->device(), &viewInfo, nullptr, &this->swapchainImageViews[i]));
 	}
 }
 
