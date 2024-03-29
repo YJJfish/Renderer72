@@ -60,7 +60,6 @@ namespace s72 {
 		virtual jjyou::glsl::mat4 getProjectionMatrix(void) const override {
 			return jjyou::glsl::perspective(this->yFov, this->aspectRatio, this->zNear, this->zFar);
 		}
-	private:
 		float yFov;
 		float aspectRatio;
 		float zNear;
@@ -89,7 +88,6 @@ namespace s72 {
 		virtual jjyou::glsl::mat4 getProjectionMatrix(void) const override {
 			return jjyou::glsl::mat4();
 		}
-	private:
 		float left;
 		float right;
 		float bottom;
@@ -461,7 +459,7 @@ namespace s72 {
 		std::array<FrameDescriptorSets, Engine::MAX_FRAMES_IN_FLIGHT> frameDescriptorSets{};
 		std::vector<ShadowMap> sunLightShadowMaps{};
 		std::vector<ShadowMap> sphereLightShadowMaps{};
-		vk::raii::Sampler spotLightShadowMapSampler{ nullptr };
+		vk::raii::Sampler shadowMapSampler{ nullptr };
 		std::vector<ShadowMap> spotLightShadowMaps{};
 		VkDescriptorPool descriptorPool = nullptr;
 		

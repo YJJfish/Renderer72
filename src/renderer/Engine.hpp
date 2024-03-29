@@ -93,11 +93,29 @@ public:
 		jjyou::glsl::mat4 model{};
 	};
 
+	static constexpr inline std::uint32_t NUM_CASCADE_LEVELS = 4;
+
 	struct SunLight {
+		std::array<float, NUM_CASCADE_LEVELS> cascadeSplits{}; // Pay attention to the alignment requirement!
+		std::array<jjyou::glsl::mat4, NUM_CASCADE_LEVELS> orthographic = {}; // Project points in world space to texture uv
 		jjyou::glsl::vec3 direction{}; // Object to light, in world space
 		float angle = 0.0f;
 		jjyou::glsl::vec3 tint{}; // Already multiplied by strength
+		int shadow; // Shadow map size
+	};
+
+	struct SunLightShadowMapUniform {
+		//Why not passing 4 mat4 projection matrices?
+		//Because "push_constant" is only guaranteed to have at least 128 bytes.
+		jjyou::glsl::vec3 orthoX{};
 		float __dummy1 = 0.0f;
+		jjyou::glsl::vec3 orthoY{};
+		float __dummy2 = 0.0f;
+		std::array<jjyou::glsl::vec2, NUM_CASCADE_LEVELS> center = {};
+		std::array<float, NUM_CASCADE_LEVELS> width = {};
+		std::array<float, NUM_CASCADE_LEVELS> height = {};
+		std::array<float, NUM_CASCADE_LEVELS> zNear = {};
+		std::array<float, NUM_CASCADE_LEVELS> zFar = {};
 	};
 
 	struct SphereLight {
@@ -107,8 +125,18 @@ public:
 		float limit = 0.0f;
 	};
 
+	struct SphereLightShadowMapUniform {
+		jjyou::glsl::vec3 position{};
+		float radius = 0.0f;
+		jjyou::glsl::mat4 perspective{};
+		float limit = 0.0f;
+		float __dummy1 = 0.0f;
+		float __dummy2 = 0.0f;
+		float __dummy3 = 0.0f;
+	};
+
 	struct SpotLight {
-		jjyou::glsl::mat4 lightSpace{}; // Project points in world space to texture uv
+		jjyou::glsl::mat4 perspective{}; // Project points in world space to texture uv
 		jjyou::glsl::vec3 position{}; // In world space
 		float radius = 0.0f;
 		jjyou::glsl::vec3 direction{}; // Object to light, in world space
@@ -117,12 +145,16 @@ public:
 		float blend = 0.0f;
 		float limit = 0.0f;
 		int shadow = 0;
+		float __dummy1 = 0.0f;
 		float __dummy2 = 0.0f;
-		float __dummy3 = 0.0f;
 	};
 
-	static constexpr inline std::uint32_t MAX_NUM_SUM_LIGHTS = 1;
-	static constexpr inline std::uint32_t MAX_NUM_SUM_LIGHTS_NO_SHADOW = 16;
+	struct SpotLightShadowMapUniform {
+		jjyou::glsl::mat4 perspective{};
+	};
+
+	static constexpr inline std::uint32_t MAX_NUM_SUN_LIGHTS = 1;
+	static constexpr inline std::uint32_t MAX_NUM_SUN_LIGHTS_NO_SHADOW = 16;
 
 	static constexpr inline std::uint32_t MAX_NUM_SPHERE_LIGHTS = 4;
 	static constexpr inline std::uint32_t MAX_NUM_SPHERE_LIGHTS_NO_SHADOW = 128;
@@ -138,8 +170,8 @@ public:
 		int numSpotLightsNoShadow = 0;
 		float __dummy1 = 0.0f;
 		float __dummy2 = 0.0f;
-		std::array<SunLight, MAX_NUM_SUM_LIGHTS> sunLights = {};
-		std::array<SunLight, MAX_NUM_SUM_LIGHTS_NO_SHADOW> sunLightsNoShadow = {};
+		std::array<SunLight, MAX_NUM_SUN_LIGHTS> sunLights = {};
+		std::array<SunLight, MAX_NUM_SUN_LIGHTS_NO_SHADOW> sunLightsNoShadow = {};
 		std::array<SphereLight, MAX_NUM_SPHERE_LIGHTS> sphereLights = {};
 		std::array<SphereLight, MAX_NUM_SPHERE_LIGHTS_NO_SHADOW> sphereLightsNoShadow = {};
 		std::array<SpotLight, MAX_NUM_SPOT_LIGHTS> spotLights = {};
@@ -260,6 +292,12 @@ public:
 
 	VkPipelineLayout spotlightPipelineLayout;
 	VkPipeline spotlightPipeline;
+
+	VkPipelineLayout spherelightPipelineLayout;
+	VkPipeline spherelightPipeline;
+
+	VkPipelineLayout sunlightPipelineLayout;
+	VkPipeline sunlightPipeline;
 
 public:
 

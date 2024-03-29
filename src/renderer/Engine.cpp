@@ -66,7 +66,7 @@ void Engine::drawFrame() {
 		jjyou::glsl::mat4 transform;
 		s72::Mesh::Ptr mesh;
 	};
-	struct SkyboxUniform skyboxUniform {
+	SkyboxUniform skyboxUniform{
 		.model = jjyou::glsl::mat4(1.0f)
 	};
 	struct CameraInfo {
@@ -80,6 +80,9 @@ void Engine::drawFrame() {
 	std::vector<InstanceToDraw> lambertianInstances;
 	std::vector<InstanceToDraw> pbrInstances;
 	Lights lights{};
+	std::array<SpotLightShadowMapUniform, Engine::MAX_NUM_SPOT_LIGHTS> spotLightShadowMapUniforms{};
+	std::array<SphereLightShadowMapUniform, Engine::MAX_NUM_SPHERE_LIGHTS> sphereLightShadowMapUniforms{};
+	std::array<SunLightShadowMapUniform, Engine::MAX_NUM_SUN_LIGHTS> sunLightShadowMapUniforms{};
 	std::unordered_map<std::string, CameraInfo> cameraInfos;
 	std::function<bool(s72::Node::Ptr, const jjyou::glsl::mat4&)> traverseSceneVisitor =
 		[&](s72::Node::Ptr node, const jjyou::glsl::mat4& transform) -> bool {
@@ -115,31 +118,68 @@ void Engine::drawFrame() {
 			s72::Light::Ptr light = node->light.lock();
 			if (light->lightType == "sun") {
 				s72::SunLight::Ptr sunLight = std::reinterpret_pointer_cast<s72::SunLight>(light);
+				jjyou::glsl::vec3 direction = jjyou::glsl::normalized(jjyou::glsl::vec3(transform[2]));
+				jjyou::glsl::vec3 orthoX{ 1.0f, 0.0f, 0.0f };
+				if (jjyou::glsl::norm(orthoX - direction) <= 1e-1f)
+					orthoX = jjyou::glsl::vec3(0.0f, 1.0f, 0.0f);
+				jjyou::glsl::vec3 orthoY = jjyou::glsl::cross(-direction, orthoX);
+				orthoX = jjyou::glsl::cross(orthoY, -direction);
+				Engine::SunLight sunLightUniform{
+					.cascadeSplits = {}, // To set
+					.orthographic = {}, // To set
+					.direction = direction,
+					.angle = sunLight->angle,
+					.tint = sunLight->tint * sunLight->strength,
+					.shadow = static_cast<int>(sunLight->shadow)
+				};
+				Engine::SunLightShadowMapUniform sunLightShadowMapUniform{
+					.orthoX = orthoX,
+					.orthoY = orthoY,
+					.center = {}, // To set
+					.width = {}, // To set
+					.height = {}, // To set
+					.zNear = {}, // To set
+					.zFar = {} // To set
+				};
 				if (sunLight->shadow == 0) {
-					lights.sunLightsNoShadow[lights.numSunLightsNoShadow++] = Engine::SunLight{
-						.direction = jjyou::glsl::normalized(jjyou::glsl::vec3(transform[2])),
-						.angle = sunLight->angle,
-						.tint = sunLight->tint * sunLight->strength
-					};
+					lights.sunLightsNoShadow[lights.numSunLightsNoShadow] = sunLightUniform;
+					++lights.numSunLightsNoShadow;
+				}
+				else {
+					lights.sunLights[lights.numSunLights] = sunLightUniform;
+					sunLightShadowMapUniforms[lights.numSunLights] = sunLightShadowMapUniform;
+					++lights.numSunLights;
 				}
 			}
 			else if (light->lightType == "sphere") {
 				s72::SphereLight::Ptr sphereLight = std::reinterpret_pointer_cast<s72::SphereLight>(light);
+				Engine::SphereLight sphereLightUniform{
+					.position = jjyou::glsl::vec3(transform[3]),
+					.radius = sphereLight->radius,
+					.tint = sphereLight->tint * sphereLight->power,
+					.limit = sphereLight->limit
+				};
+				Engine::SphereLightShadowMapUniform sphereLightShadowMapUniform{
+					.position = sphereLightUniform.position,
+					.radius = sphereLightUniform.radius,
+					.perspective = jjyou::glsl::perspective(std::numbers::pi_v<float> / 2.0f, 1.0f, sphereLightUniform.radius / std::sqrt(2.0f), sphereLightUniform.limit),
+					.limit = sphereLightUniform.limit
+				};
 				if (sphereLight->shadow == 0) {
-					lights.sphereLightsNoShadow[lights.numSphereLightsNoShadow++] = Engine::SphereLight{
-						.position = jjyou::glsl::vec3(transform[3]),
-						.radius = sphereLight->radius,
-						.tint = sphereLight->tint * sphereLight->power,
-						.limit = sphereLight->limit
-					};
+					lights.sphereLightsNoShadow[lights.numSphereLightsNoShadow] = sphereLightUniform;
+					++lights.numSphereLightsNoShadow;
+				}
+				else {
+					lights.sphereLights[lights.numSphereLights] = sphereLightUniform;
+					sphereLightShadowMapUniforms[lights.numSphereLights] = sphereLightShadowMapUniform;
+					++lights.numSphereLights;
 				}
 			}
 			else if (light->lightType == "spot") {
 				s72::SpotLight::Ptr spotLight = std::reinterpret_pointer_cast<s72::SpotLight>(light);
-				Engine::SpotLight& spotLightStruct = (spotLight->shadow == 0) ? lights.spotLightsNoShadow[lights.numSpotLightsNoShadow++] : lights.spotLights[lights.numSpotLights++];
 				jjyou::glsl::mat4 invZ = jjyou::glsl::mat4(1.0f); invZ[2][2] = -1.0f; invZ[0][0] = -1.0f;
-				spotLightStruct = Engine::SpotLight{
-					.lightSpace = jjyou::glsl::perspective(spotLight->fov, 1.0f, std::cos(spotLight->fov / 2.0f) * spotLight->radius, spotLight->limit) * invZ * jjyou::glsl::inverse(transform),
+				Engine::SpotLight spotLightUniform{
+					.perspective = jjyou::glsl::perspective(spotLight->fov, 1.0f, std::cos(spotLight->fov / 2.0f) * spotLight->radius, spotLight->limit) * invZ * jjyou::glsl::inverse(transform),
 					.position = jjyou::glsl::vec3(transform[3]),
 					.radius = spotLight->radius,
 					.direction = jjyou::glsl::normalized(jjyou::glsl::vec3(transform[2])),
@@ -149,6 +189,18 @@ void Engine::drawFrame() {
 					.limit = spotLight->limit,
 					.shadow = static_cast<int>(spotLight->shadow)
 				};
+				Engine::SpotLightShadowMapUniform spotLightShadowMapUniform{
+					.perspective = spotLightUniform.perspective,
+				};
+				if (spotLight->shadow == 0) {
+					lights.spotLightsNoShadow[lights.numSpotLightsNoShadow] = spotLightUniform;
+					++lights.numSpotLightsNoShadow;
+				}
+				else {
+					lights.spotLights[lights.numSpotLights] = spotLightUniform;
+					spotLightShadowMapUniforms[lights.numSpotLights] = spotLightShadowMapUniform;
+					++lights.numSpotLights;
+				}
 			}
 		}
 		return true;
@@ -166,12 +218,132 @@ void Engine::drawFrame() {
 			traverseSceneVisitor
 		);
 	}
+
+	// Get view matrices and culling matrices
+	jjyou::glsl::mat4 viewingProjection;
+	jjyou::glsl::mat4 viewingView;
+	float viewingAspectRatio{};
+	jjyou::glsl::mat4 debugProjection;
+	jjyou::glsl::mat4 debugView;
+	float debugNearZ{}, debugFarZ{};
+	if (this->cameraMode == CameraMode::USER) {
+		viewingAspectRatio = static_cast<float>(screenExtent.width) / screenExtent.height;
+		viewingProjection = jjyou::glsl::perspective(jjyou::glsl::radians(45.0f), viewingAspectRatio, 0.01f, 5000.0f);
+		viewingView = this->sceneViewer.getViewMatrix();
+		debugProjection = viewingProjection;
+		debugView = viewingView;
+		debugNearZ = 0.01f;
+		debugFarZ = 5000.0f;
+	}
+	else if (this->cameraMode == CameraMode::SCENE) {
+		viewingAspectRatio = cameraInfos[this->cameraName].aspectRatio;
+		viewingProjection = cameraInfos[this->cameraName].projection;
+		viewingView = cameraInfos[this->cameraName].view;
+		debugProjection = viewingProjection;
+		debugView = viewingView;
+		debugNearZ = std::reinterpret_pointer_cast<s72::PerspectiveCamera>(this->pScene72->cameras[this->cameraName])->zNear;
+		debugFarZ = std::reinterpret_pointer_cast<s72::PerspectiveCamera>(this->pScene72->cameras[this->cameraName])->zFar;
+	}
+	else if (this->cameraMode == CameraMode::DEBUG) {
+		viewingAspectRatio = static_cast<float>(screenExtent.width) / screenExtent.height;;
+		viewingProjection = jjyou::glsl::perspective(jjyou::glsl::radians(45.0f), viewingAspectRatio, 0.01f, 5000.0f);
+		viewingView = this->sceneViewer.getViewMatrix();
+		debugProjection = cameraInfos[this->cameraName].projection;
+		debugView = cameraInfos[this->cameraName].view;
+		debugNearZ = std::reinterpret_pointer_cast<s72::PerspectiveCamera>(this->pScene72->cameras[this->cameraName])->zNear;
+		debugFarZ = std::reinterpret_pointer_cast<s72::PerspectiveCamera>(this->pScene72->cameras[this->cameraName])->zFar;
+	}
+
+	// Compute sun light shadow map parameters (because this is dependent on the viewing camera)
+	if (lights.numSunLights > 0) {
+		// Compute cascade splits
+		std::array<float, Engine::NUM_CASCADE_LEVELS> cascadeSplits{};
+		// Reference: https://developer.nvidia.com/gpugems/GPUGems3/gpugems3_ch10.html
+		for (uint32_t i = 0; i < Engine::NUM_CASCADE_LEVELS; ++i) {
+			float p = static_cast<float>(i + 1) / static_cast<float>(Engine::NUM_CASCADE_LEVELS);
+			float log = debugNearZ * std::pow(debugFarZ / debugNearZ, p);
+			float uniform = debugNearZ + (debugFarZ - debugNearZ) * p;
+			float d = 0.94f * (log - uniform) + uniform;
+			cascadeSplits[i] = d;
+		}
+		// For each sun light
+		for (int i = 0; i < lights.numSunLights; ++i) {
+			lights.sunLights[i].cascadeSplits = cascadeSplits;
+			jjyou::glsl::mat3 lightSpaceRotation = jjyou::glsl::transpose(jjyou::glsl::mat3(
+				sunLightShadowMapUniforms[i].orthoX,
+				sunLightShadowMapUniforms[i].orthoY,
+				-lights.sunLights[i].direction
+			));
+			for (std::uint32_t l = 0; l < Engine::NUM_CASCADE_LEVELS; ++l) {
+				float lastSplit = (l == 0) ? 0.0f : (cascadeSplits[l - 1] - debugNearZ) / (debugFarZ - debugNearZ);
+				float currSplit = (cascadeSplits[l] - debugNearZ) / (debugFarZ - debugNearZ);
+				// Back-project frustum corners to world space, then transform to base light space
+				std::array<jjyou::glsl::vec3, 8> corners = { {
+					jjyou::glsl::vec3(-1.0f,  1.0f, 0.0f),
+					jjyou::glsl::vec3(1.0f,  1.0f, 0.0f),
+					jjyou::glsl::vec3(1.0f, -1.0f, 0.0f),
+					jjyou::glsl::vec3(-1.0f, -1.0f, 0.0f),
+					jjyou::glsl::vec3(-1.0f,  1.0f,  1.0f),
+					jjyou::glsl::vec3(1.0f,  1.0f,  1.0f),
+					jjyou::glsl::vec3(1.0f, -1.0f,  1.0f),
+					jjyou::glsl::vec3(-1.0f, -1.0f,  1.0f),
+				} };
+				jjyou::glsl::mat4 invCamera = jjyou::glsl::inverse(debugProjection * debugView);
+				for (auto& corner : corners) {
+					jjyou::glsl::vec4 tmp = invCamera * jjyou::glsl::vec4(corner, 1.0f);
+					corner = jjyou::glsl::vec3(tmp / tmp.w);
+				}
+				for (std::size_t c = 0; c < 4; ++c) {
+					jjyou::glsl::vec3 dist = corners[c + 4] - corners[c];
+					corners[c] = corners[c] + lastSplit * dist;
+					corners[c + 4] = corners[c] + currSplit * dist;
+				}
+				for (auto& corner : corners) {
+					corner = lightSpaceRotation * corner;
+				}
+				/*std::cout << "level " << l << ":";
+				for (auto& corner : corners) {
+					std::cout << ", [";
+					std::cout << corner.x << ", " << corner.y << ", " << corner.z << "]";
+				}
+				std::cout << std::endl;*/
+				// Get the range
+				jjyou::glsl::vec3 min(std::numeric_limits<float>::max());
+				jjyou::glsl::vec3 max(std::numeric_limits<float>::lowest());
+				for (auto& corner : corners) {
+					min = jjyou::glsl::min(min, corner);
+					max = jjyou::glsl::max(max, corner);
+				}
+				// Objects outside of the camera frustum can also result in shadows.
+				jjyou::glsl::vec3 tmpRange = max.z - min.z;
+				min.z -= tmpRange.z * 10.0f;
+				min.x -= tmpRange.x * 0.05f;
+				min.y -= tmpRange.y * 0.05f;
+				max.x += tmpRange.x * 0.05f;
+				max.y += tmpRange.y * 0.05f;
+				// Now fill the light parameters.
+				jjyou::glsl::mat4 lightSpace = jjyou::glsl::mat4(lightSpaceRotation);
+				jjyou::glsl::vec2 center((min.x + max.x) / 2.0f, (min.y + max.y) / 2.0f);
+				float width = max.x - min.x;
+				float height = max.y - min.y;
+				lightSpace[3].x = -center.x;
+				lightSpace[3].y = -center.y;
+				lights.sunLights[i].orthographic[l] = jjyou::glsl::orthographic(width, height, min.z, max.z) * lightSpace;
+				sunLightShadowMapUniforms[i].center[l] = center;
+				sunLightShadowMapUniforms[i].width[l] = width;
+				sunLightShadowMapUniforms[i].height[l] = height;
+				sunLightShadowMapUniforms[i].zNear[l] = min.z;
+				sunLightShadowMapUniforms[i].zFar[l] = max.z;
+			}
+		}
+	}
 	
 	// Compute dynamic uniform buffer offset
 	VkDeviceSize minAlignment = this->context.physicalDevice().getProperties().limits.minUniformBufferOffsetAlignment;
 	VkDeviceSize dynamicBufferOffset = sizeof(Engine::ObjectLevelUniform);
 	if (minAlignment > 0)
 		dynamicBufferOffset = (dynamicBufferOffset + minAlignment - 1) & ~(minAlignment - 1);
+	// Fill model matrix dynamic uniform buffer
 	std::size_t instanceCount = 0;
 	for (const auto& instancesToDraw : { std::cref(simpleInstances), std::cref(mirrorInstances), std::cref(environmentInstances), std::cref(lambertianInstances), std::cref(pbrInstances) }) {
 		for (const auto& instanceToDraw : instancesToDraw.get()) {
@@ -207,7 +379,7 @@ void Engine::drawFrame() {
 				.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
 				.pNext = nullptr,
 				.renderPass = *this->shadowMappingRenderPass,
-				.framebuffer = *this->pScene72->spotLightShadowMaps[i].framebuffer(0),
+				.framebuffer = *this->pScene72->spotLightShadowMaps[i].framebuffer(),
 				.renderArea = {
 					.offset = {0, 0},
 					.extent = this->pScene72->spotLightShadowMaps[i].extent()
@@ -231,8 +403,7 @@ void Engine::drawFrame() {
 				.extent = this->pScene72->spotLightShadowMaps[i].extent(),
 			};
 			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &shadowMappingScissor);
-			vkCmdSetDepthBias(this->frameData[this->currentFrame].graphicsCommandBuffer, 1.25f, 0.0f, 1.75f);
-			vkCmdPushConstants(this->frameData[this->currentFrame].graphicsCommandBuffer, this->spotlightPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0U, sizeof(lights.spotLights[i].lightSpace), &lights.spotLights[i].lightSpace);
+			vkCmdPushConstants(this->frameData[this->currentFrame].graphicsCommandBuffer, this->spotlightPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0U, sizeof(Engine::SpotLightShadowMapUniform), &spotLightShadowMapUniforms[i]);
 			instanceCount = static_cast<std::uint32_t>(simpleInstances.size()); // Skip simple material
 			for (const auto& instancesToDraw : { std::cref(mirrorInstances), std::cref(environmentInstances), std::cref(lambertianInstances), std::cref(pbrInstances) }) {
 				for (const auto& instanceToDraw : instancesToDraw.get()) {
@@ -246,36 +417,100 @@ void Engine::drawFrame() {
 			}
 			vkCmdEndRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer);
 		}
+		for (int i = 0; i < lights.numSphereLights; ++i) {
+			VkClearValue clearValue = VkClearValue{
+				.depthStencil = { 1.0f, 0 }
+			};
+			VkRenderPassBeginInfo renderPassInfo{
+				.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+				.pNext = nullptr,
+				.renderPass = *this->shadowMappingRenderPass,
+				.framebuffer = *this->pScene72->sphereLightShadowMaps[i].framebuffer(),
+				.renderArea = {
+					.offset = {0, 0},
+					.extent = this->pScene72->sphereLightShadowMaps[i].extent()
+				},
+				.clearValueCount = 1U,
+				.pClearValues = &clearValue
+			};
+			vkCmdBeginRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->spherelightPipeline);
+			VkViewport shadowMappingViewport{
+				.x = 0.0f,
+				.y = 0.0f,
+				.width = static_cast<float>(this->pScene72->sphereLightShadowMaps[i].extent().width),
+				.height = static_cast<float>(this->pScene72->sphereLightShadowMaps[i].extent().height),
+				.minDepth = 0.0f,
+				.maxDepth = 1.0f
+			};
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &shadowMappingViewport);
+			VkRect2D shadowMappingScissor{
+				.offset = { 0, 0 },
+				.extent = this->pScene72->sphereLightShadowMaps[i].extent(),
+			};
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &shadowMappingScissor);
+			vkCmdPushConstants(this->frameData[this->currentFrame].graphicsCommandBuffer, this->spherelightPipelineLayout, VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0U, sizeof(Engine::SphereLightShadowMapUniform), &sphereLightShadowMapUniforms[i]);
+			instanceCount = static_cast<std::uint32_t>(simpleInstances.size()); // Skip simple material
+			for (const auto& instancesToDraw : { std::cref(mirrorInstances), std::cref(environmentInstances), std::cref(lambertianInstances), std::cref(pbrInstances) }) {
+				for (const auto& instanceToDraw : instancesToDraw.get()) {
+					VkDeviceSize vertexBufferOffsets = 0;
+					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
+					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
+					instanceCount++;
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->spherelightPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
+					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
+				}
+			}
+			vkCmdEndRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer);
+		}
+		for (int i = 0; i < lights.numSunLights; ++i) {
+			VkClearValue clearValue = VkClearValue{
+				.depthStencil = { 1.0f, 0 }
+			};
+			VkRenderPassBeginInfo renderPassInfo{
+				.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+				.pNext = nullptr,
+				.renderPass = *this->shadowMappingRenderPass,
+				.framebuffer = *this->pScene72->sunLightShadowMaps[i].framebuffer(),
+				.renderArea = {
+					.offset = {0, 0},
+					.extent = this->pScene72->sunLightShadowMaps[i].extent()
+				},
+				.clearValueCount = 1U,
+				.pClearValues = &clearValue
+			};
+			vkCmdBeginRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->sunlightPipeline);
+			VkViewport shadowMappingViewport{
+				.x = 0.0f,
+				.y = 0.0f,
+				.width = static_cast<float>(this->pScene72->sunLightShadowMaps[i].extent().width),
+				.height = static_cast<float>(this->pScene72->sunLightShadowMaps[i].extent().height),
+				.minDepth = 0.0f,
+				.maxDepth = 1.0f
+			};
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &shadowMappingViewport);
+			VkRect2D shadowMappingScissor{
+				.offset = { 0, 0 },
+				.extent = this->pScene72->sunLightShadowMaps[i].extent(),
+			};
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &shadowMappingScissor);
+			vkCmdPushConstants(this->frameData[this->currentFrame].graphicsCommandBuffer, this->sunlightPipelineLayout, VK_SHADER_STAGE_GEOMETRY_BIT, 0U, sizeof(Engine::SunLightShadowMapUniform), &sunLightShadowMapUniforms[i]);
+			instanceCount = static_cast<std::uint32_t>(simpleInstances.size()); // Skip simple material
+			for (const auto& instancesToDraw : { std::cref(mirrorInstances), std::cref(environmentInstances), std::cref(lambertianInstances), std::cref(pbrInstances) }) {
+				for (const auto& instanceToDraw : instancesToDraw.get()) {
+					VkDeviceSize vertexBufferOffsets = 0;
+					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
+					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
+					instanceCount++;
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->sunlightPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
+					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
+				}
+			}
+			vkCmdEndRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer);
+		}
 
 		// Draw the scene
-		
-		// Get view matrices and culling matrices
-		jjyou::glsl::mat4 viewingProjection;
-		jjyou::glsl::mat4 viewingView;
-		float viewingAspectRatio{};
-		jjyou::glsl::mat4 cullingProjection;
-		jjyou::glsl::mat4 cullingView;
-		if (this->cameraMode == CameraMode::USER) {
-			viewingAspectRatio = static_cast<float>(screenExtent.width) / screenExtent.height;
-			viewingProjection = jjyou::glsl::perspective(jjyou::glsl::radians(45.0f), viewingAspectRatio, 0.01f, 500.0f);
-			viewingView = this->sceneViewer.getViewMatrix();
-			cullingProjection = viewingProjection;
-			cullingView = viewingView;
-		}
-		else if (this->cameraMode == CameraMode::SCENE) {
-			viewingAspectRatio = cameraInfos[this->cameraName].aspectRatio;
-			viewingProjection = cameraInfos[this->cameraName].projection;
-			viewingView = cameraInfos[this->cameraName].view;
-			cullingProjection = viewingProjection;
-			cullingView = viewingView;
-		}
-		else if (this->cameraMode == CameraMode::DEBUG) {
-			viewingAspectRatio = static_cast<float>(screenExtent.width) / screenExtent.height;;
-			viewingProjection = jjyou::glsl::perspective(jjyou::glsl::radians(45.0f), viewingAspectRatio, 0.01f, 500.0f);
-			viewingView = this->sceneViewer.getViewMatrix();
-			cullingProjection = cameraInfos[this->cameraName].projection;
-			cullingView = cameraInfos[this->cameraName].view;
-		}
 
 		// Set viewport and scissor.
 		// This is easy for the scene/debug camera.
@@ -286,7 +521,7 @@ void Engine::drawFrame() {
 			viewPortHeight = viewPortWidth / viewingAspectRatio;
 		else if (viewPortWidth / viewPortHeight > viewingAspectRatio)
 			viewPortWidth = viewPortHeight * viewingAspectRatio;
-		VkViewport viewport{
+		VkViewport sceneViewport{
 			.x = (screenExtent.width - viewPortWidth) / 2.0f,
 			.y = (screenExtent.height - viewPortHeight) / 2.0f,
 			.width = viewPortWidth,
@@ -294,7 +529,7 @@ void Engine::drawFrame() {
 			.minDepth = 0.0f,
 			.maxDepth = 1.0f
 		};
-		VkRect2D scissor{
+		VkRect2D sceneScissor{
 			.offset = { 0, 0 },
 			.extent = screenExtent,
 		};
@@ -335,8 +570,8 @@ void Engine::drawFrame() {
 
 		if (this->pScene72->environment) {
 			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->skyboxPipeline);
-			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &viewport);
-			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &scissor);
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneViewport);
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneScissor);
 			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->skyboxPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
 			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->skyboxPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].skyboxUniformDescriptorSet, 0, nullptr);
 			vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, 36, 1, 0, 0);
@@ -345,12 +580,12 @@ void Engine::drawFrame() {
 		instanceCount = 0;
 		if (!simpleInstances.empty()) {
 			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->simplePipeline);
-			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &viewport);
-			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &scissor);
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneViewport);
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneScissor);
 			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->simplePipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
 			for (const auto& instanceToDraw : simpleInstances) {
 				if (this->cullingMode == CullingMode::NONE ||
-					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(cullingProjection, cullingView, instanceToDraw.transform)
+					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(debugProjection, debugView, instanceToDraw.transform)
 					) {
 					VkDeviceSize vertexBufferOffsets = 0;
 					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
@@ -363,13 +598,13 @@ void Engine::drawFrame() {
 		}
 		if (!mirrorInstances.empty()) {
 			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorPipeline);
-			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &viewport);
-			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &scissor);
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneViewport);
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneScissor);
 			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
 			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorPipelineLayout, 3, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].skyboxUniformDescriptorSet, 0, nullptr);
 			for (const auto& instanceToDraw : mirrorInstances) {
 				if (this->cullingMode == CullingMode::NONE ||
-					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(cullingProjection, cullingView, instanceToDraw.transform)
+					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(debugProjection, debugView, instanceToDraw.transform)
 					) {
 					VkDeviceSize vertexBufferOffsets = 0;
 					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
@@ -383,13 +618,13 @@ void Engine::drawFrame() {
 		}
 		if (!environmentInstances.empty()) {
 			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentPipeline);
-			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &viewport);
-			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &scissor);
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneViewport);
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneScissor);
 			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
 			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentPipelineLayout, 3, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].skyboxUniformDescriptorSet, 0, nullptr);
 			for (const auto& instanceToDraw : environmentInstances) {
 				if (this->cullingMode == CullingMode::NONE ||
-					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(cullingProjection, cullingView, instanceToDraw.transform)
+					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(debugProjection, debugView, instanceToDraw.transform)
 					) {
 					VkDeviceSize vertexBufferOffsets = 0;
 					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
@@ -403,13 +638,13 @@ void Engine::drawFrame() {
 		}
 		if (!lambertianInstances.empty()) {
 			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianPipeline);
-			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &viewport);
-			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &scissor);
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneViewport);
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneScissor);
 			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
 			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianPipelineLayout, 3, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].skyboxUniformDescriptorSet, 0, nullptr);
 			for (const auto& instanceToDraw : lambertianInstances) {
 				if (this->cullingMode == CullingMode::NONE ||
-					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(cullingProjection, cullingView, instanceToDraw.transform)
+					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(debugProjection, debugView, instanceToDraw.transform)
 					) {
 					VkDeviceSize vertexBufferOffsets = 0;
 					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
@@ -423,13 +658,13 @@ void Engine::drawFrame() {
 		}
 		if (!pbrInstances.empty()) {
 			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pbrPipeline);
-			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &viewport);
-			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &scissor);
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneViewport);
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneScissor);
 			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pbrPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
 			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pbrPipelineLayout, 3, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].skyboxUniformDescriptorSet, 0, nullptr);
 			for (const auto& instanceToDraw : pbrInstances) {
 				if (this->cullingMode == CullingMode::NONE ||
-					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(cullingProjection, cullingView, instanceToDraw.transform)
+					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(debugProjection, debugView, instanceToDraw.transform)
 					) {
 					VkDeviceSize vertexBufferOffsets = 0;
 					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);

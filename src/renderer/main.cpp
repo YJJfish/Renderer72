@@ -90,6 +90,7 @@ int main(int argc, char* argv[]) {
 			while (!glfwWindowShouldClose(engine.window)) {
 				engine.drawFrame();
 				glfwPollEvents();
+				
 			}
 		}
 		else {

@@ -5,8 +5,6 @@ class ShadowMap {
 
 public:
 
-	static constexpr inline std::uint32_t CASCADE_LEVEL = 4;
-
 	enum class Type {
 		Undefined = 0,
 		Perspective = 1,
@@ -46,8 +44,9 @@ public:
 			this->_numLayers = other._numLayers;
 			this->_image = std::move(other._image);
 			this->_imageMemory = std::move(other._imageMemory);
-			this->_outputImageViews = std::move(other._outputImageViews);
-			this->_inputImageViews = std::move(other._inputImageViews);
+			this->_outputImageView = std::move(other._outputImageView);
+			this->_framebuffer = std::move(other._framebuffer);
+			this->_inputImageView = std::move(other._inputImageView);
 		}
 		return *this;
 	}
@@ -60,18 +59,23 @@ public:
 		Type type,
 		vk::Extent2D extent,
 		vk::Format format,
+		std::uint32_t numLayers, /* 1 for perspective, 6 for omnidirectional, number of levels for cascade */
 		const vk::raii::RenderPass& renderPass
 	) : _pContext(&context), _pAllocator(&allocator), _type(type), _extent(extent), _format(format)
 	{
 		switch (this->_type) {
 		case Type::Perspective:
+			if (numLayers != 1U)
+				throw std::runtime_error("[Shadow Map] The number of layers for perspective shadow map should be 1.");
 			this->_numLayers = 1U;
 			break;
 		case Type::Omnidirectional:
+			if (numLayers != 6U)
+				throw std::runtime_error("[Shadow Map] The number of layers for omnidirectional shadow map should be 6.");
 			this->_numLayers = 6U;
 			break;
 		case Type::Cascade:
-			this->_numLayers = ShadowMap::CASCADE_LEVEL;
+			this->_numLayers = numLayers;
 			break;
 		default:
 			throw std::runtime_error("[Shadow Map] Unknown shadow map type.");
@@ -98,7 +102,7 @@ public:
 			(this->_type == Type::Omnidirectional) ? vk::ImageCreateFlagBits::eCubeCompatible : vk::ImageCreateFlags(0U),
 			vk::ImageType::e2D,
 			this->_format,
-			vk::Extent3D(this->_extent, 1U) ,
+			vk::Extent3D(this->_extent, 1U),
 			1U,
 			this->_numLayers,
 			vk::SampleCountFlagBits::e1,
@@ -117,75 +121,53 @@ public:
 		);
 		JJYOU_VK_UTILS_CHECK(this->_pAllocator->allocate(reinterpret_cast<VkMemoryAllocateInfo*>(&imageMemoryAllocInfo), this->_imageMemory));
 		this->_image.bindMemory(this->_imageMemory.memory(), this->_imageMemory.offset());
-		// Create the output image views and framebuffers
-		this->_outputImageViews.reserve(this->_numLayers);
-		this->_framebuffers.reserve(this->_numLayers);
-		for (std::uint32_t i = 0; i < this->_numLayers; ++i) {
-			vk::ImageViewCreateInfo imageViewCreateInfo(
-				vk::ImageViewCreateFlagBits(0U),
-				*this->_image,
-				vk::ImageViewType::e2D,
-				this->_format,
-				vk::ComponentMapping(vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity),
-				vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eDepth, 0U, 1U, i, 1U)
-			);
-			this->_outputImageViews.emplace_back(
-				this->_pContext->device(),
-				imageViewCreateInfo
-			);
-			vk::FramebufferCreateInfo framebufferCreateInfo(
-				vk::FramebufferCreateFlags(0U),
-				*renderPass,
-				1U,
-				&*this->_outputImageViews.back(),
-				this->_extent.width,
-				this->_extent.height,
-				1U
-			);
-			this->_framebuffers.emplace_back(
-				this->_pContext->device(),
-				framebufferCreateInfo
-			);
-		}
+		// Create the output image view and framebuffer
+		vk::ImageViewCreateInfo imageViewCreateInfo(
+			vk::ImageViewCreateFlagBits(0U),
+			*this->_image,
+			(this->_type == Type::Perspective) ? vk::ImageViewType::e2D : vk::ImageViewType::e2DArray,
+			this->_format,
+			vk::ComponentMapping(vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity),
+			vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eDepth, 0U, 1U, 0U, this->_numLayers)
+		);
+		this->_outputImageView = vk::raii::ImageView(
+			this->_pContext->device(),
+			imageViewCreateInfo
+		);
+		vk::FramebufferCreateInfo framebufferCreateInfo(
+			vk::FramebufferCreateFlags(0U),
+			*renderPass,
+			1U,
+			&*this->_outputImageView,
+			this->_extent.width,
+			this->_extent.height,
+			this->_numLayers
+		);
+		this->_framebuffer = vk::raii::Framebuffer(
+			this->_pContext->device(),
+			framebufferCreateInfo
+		);
 		// Create the input image views
 		switch (this->_type) {
-		case Type::Perspective:
-		case Type::Cascade: {
-			this->_inputImageViews.reserve(this->_numLayers);
-			for (std::uint32_t i = 0; i < this->_numLayers; ++i) {
-				vk::ImageViewCreateInfo imageViewCreateInfo(
-					vk::ImageViewCreateFlagBits(0U),
-					*this->_image,
-					vk::ImageViewType::e2D,
-					this->_format,
-					vk::ComponentMapping(vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity),
-					vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eDepth, 0U, 1U, i, 1U)
-				);
-				this->_inputImageViews.emplace_back(
-					this->_pContext->device(),
-					imageViewCreateInfo
-				);
-			}
+		case Type::Perspective: {
+			imageViewCreateInfo.viewType = vk::ImageViewType::e2D;
 			break;
 		}
 		case Type::Omnidirectional: {
-			vk::ImageViewCreateInfo imageViewCreateInfo(
-				vk::ImageViewCreateFlagBits(0U),
-				*this->_image,
-				vk::ImageViewType::eCube,
-				this->_format,
-				vk::ComponentMapping(vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity),
-				vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0U, 1U, 0U, 6U)
-			);
-			this->_inputImageViews.emplace_back(
-				this->_pContext->device(),
-				imageViewCreateInfo
-			);
+			imageViewCreateInfo.viewType = vk::ImageViewType::eCube;
+			break;
+		}
+		case Type::Cascade: {
+			imageViewCreateInfo.viewType = vk::ImageViewType::e2DArray;
 			break;
 		}
 		default:
 			break;
 		}
+		this->_inputImageView = vk::raii::ImageView(
+			this->_pContext->device(),
+			imageViewCreateInfo
+		);
 	}
 
 	/** @brief	Get the shadow map type.
@@ -221,33 +203,33 @@ public:
 	/** @brief	Get the output image view for this texture.
 	  * @return `vk::raii::ImageView` instance.
 	  *
-	  * For perspective shadow map, the index must be 0.
-	  * The returned image view is a 2D view.
-	  * For omnidirectional shadow map, the index should be 0~5.
-	  * The returned image view is a 2D view.
-	  * For cascade shadow map, the index should be 0~`ShadowMap::CASCADE_LEVEL`-1.
-	  * The returned image view is a 2D view.
+	  * For perspective shadow map,
+	  * the returned image view is a 2D view.
+	  * For omnidirectional shadow map,
+	  * the returned image view is a 2D view with 6 layers.
+	  * For cascade shadow map,
+	  * the returned image view is a 2D view with user specified number of layers.
 	  */
-	const vk::raii::ImageView& outputImageView(std::uint32_t index) const { return this->_outputImageViews[static_cast<std::size_t>(index)]; }
+	const vk::raii::ImageView& outputImageView(void) const { return this->_outputImageView; }
 	
 	/** @brief	Get the output framebuffer for this texture.
 	  * @return `vk::raii::Framebuffer` instance.
 	  *
 	  * @sa ShadowMap::outputImageView
 	  */
-	const vk::raii::Framebuffer& framebuffer(std::uint32_t index) const { return this->_framebuffers[static_cast<std::size_t>(index)]; }
+	const vk::raii::Framebuffer& framebuffer(void) const { return this->_framebuffer; }
 
 	/** @brief	Get the input image view for this texture.
 	  * @return `vk::raii::ImageView` instance.
 	  *
-	  * For perspective shadow map, the index must be 0.
-	  * The returned image view is a 2D view.
-	  * For omnidirectional shadow map, the index must be 0.
-	  * The returned image view is a cube view.
-	  * For cascade shadow map, the index should be 0~`ShadowMap::CASCADE_LEVEL`-1.
-	  * The returned image view is a 2D view.
+	  * For perspective shadow map,
+	  * the returned image view is a 2D view.
+	  * For omnidirectional shadow map,
+	  * the returned image view is a cube view.
+	  * For cascade shadow map,
+	  * the returned image view is a 2D array view.
 	  */
-	const vk::raii::ImageView& inputImageView(std::uint32_t index) const { return this->_inputImageViews[static_cast<std::size_t>(index)]; }
+	const vk::raii::ImageView& inputImageView(void) const { return this->_inputImageView; }
 
 private:
 
@@ -259,8 +241,8 @@ private:
 	std::uint32_t _numLayers = 0;
 	vk::raii::Image _image{ nullptr };
 	jjyou::vk::Memory _imageMemory{};
-	std::vector<vk::raii::ImageView> _outputImageViews{};
-	std::vector<vk::raii::Framebuffer> _framebuffers{};
-	std::vector<vk::raii::ImageView> _inputImageViews{};
+	vk::raii::ImageView _outputImageView{ nullptr };
+	vk::raii::Framebuffer _framebuffer{ nullptr };
+	vk::raii::ImageView _inputImageView{ nullptr };
 
 };

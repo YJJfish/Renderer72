@@ -298,7 +298,7 @@ Engine::Engine(
 			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 			.pImmutableSamplers = nullptr
 		};
-		VkDescriptorSetLayoutBinding spotShadowMapSamplerUniformBinding{
+		VkDescriptorSetLayoutBinding shadowMapSamplerUniformBinding{
 			.binding = 2,
 			.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
 			.descriptorCount = 1,
@@ -312,7 +312,21 @@ Engine::Engine(
 			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 			.pImmutableSamplers = nullptr
 		};
-		std::vector<VkDescriptorSetLayoutBinding> bindings = { viewLevelUniformLayoutBinding, lightsStorageBufferUniformBinding, spotShadowMapSamplerUniformBinding, spotShadowMapsUniformBinding };
+		VkDescriptorSetLayoutBinding sphereShadowMapsUniformBinding{
+			.binding = 4,
+			.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+			.descriptorCount = Engine::MAX_NUM_SPHERE_LIGHTS,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding sunShadowMapsUniformBinding{
+			.binding = 5,
+			.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+			.descriptorCount = Engine::MAX_NUM_SUN_LIGHTS,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		std::vector<VkDescriptorSetLayoutBinding> bindings = { viewLevelUniformLayoutBinding, lightsStorageBufferUniformBinding, shadowMapSamplerUniformBinding, spotShadowMapsUniformBinding, sphereShadowMapsUniformBinding, sunShadowMapsUniformBinding };
 		VkDescriptorSetLayoutCreateInfo layoutInfo{
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 			.pNext = nullptr,
@@ -577,10 +591,34 @@ Engine::Engine(
 		VkPushConstantRange spotLightShadowMapPushConstantRange{
 			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
 			.offset = 0U,
-			.size = sizeof(jjyou::glsl::mat4)
+			.size = sizeof(Engine::SpotLightShadowMapUniform)
 		};
 		pipelineLayoutInfo.pPushConstantRanges = &spotLightShadowMapPushConstantRange;
 		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->spotlightPipelineLayout));
+
+		setLayouts = { this->objectLevelUniformDescriptorSetLayout };
+		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
+		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
+		pipelineLayoutInfo.pushConstantRangeCount = 1U;
+		VkPushConstantRange sphereLightShadowMapPushConstantRange{
+			.stageFlags = VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			.offset = 0U,
+			.size = sizeof(Engine::SphereLightShadowMapUniform)
+		};
+		pipelineLayoutInfo.pPushConstantRanges = &sphereLightShadowMapPushConstantRange;
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->spherelightPipelineLayout));
+
+		setLayouts = { this->objectLevelUniformDescriptorSetLayout };
+		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
+		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
+		pipelineLayoutInfo.pushConstantRangeCount = 1U;
+		VkPushConstantRange sunLightShadowMapPushConstantRange{
+			.stageFlags = VK_SHADER_STAGE_GEOMETRY_BIT,
+			.offset = 0U,
+			.size = sizeof(Engine::SunLightShadowMapUniform)
+		};
+		pipelineLayoutInfo.pPushConstantRanges = &sunLightShadowMapPushConstantRange;
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->sunlightPipelineLayout));
 	}
 
 	// Create graphics pipeline
@@ -598,8 +636,13 @@ Engine::Engine(
 		VkShaderModule skyboxVertShaderModule = this->createShaderModule("../spv/renderer/shader/skybox.vert.spv");
 		VkShaderModule skyboxFragShaderModule = this->createShaderModule("../spv/renderer/shader/skybox.frag.spv");
 		VkShaderModule spotlightVertShaderModule = this->createShaderModule("../spv/renderer/shader/spotlight.vert.spv");
+		VkShaderModule spherelightVertShaderModule = this->createShaderModule("../spv/renderer/shader/spherelight.vert.spv");
+		VkShaderModule spherelightGeomShaderModule = this->createShaderModule("../spv/renderer/shader/spherelight.geom.spv");
+		VkShaderModule spherelightFragShaderModule = this->createShaderModule("../spv/renderer/shader/spherelight.frag.spv");
+		VkShaderModule sunlightVertShaderModule = this->createShaderModule("../spv/renderer/shader/sunlight.vert.spv");
+		VkShaderModule sunlightGeomShaderModule = this->createShaderModule("../spv/renderer/shader/sunlight.geom.spv");
 
-		std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages = { {
+		std::array<VkPipelineShaderStageCreateInfo, 3> shaderStages = { {
 			VkPipelineShaderStageCreateInfo{
 				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 				.pNext = nullptr,
@@ -614,6 +657,15 @@ Engine::Engine(
 				.pNext = nullptr,
 				.flags = 0,
 				.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+				.module = nullptr, // To set
+				.pName = "main",
+				.pSpecializationInfo = nullptr
+			},
+			VkPipelineShaderStageCreateInfo{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+				.pNext = nullptr,
+				.flags = 0,
+				.stage = VK_SHADER_STAGE_GEOMETRY_BIT,
 				.module = nullptr, // To set
 				.pName = "main",
 				.pSpecializationInfo = nullptr
@@ -805,7 +857,7 @@ Engine::Engine(
 			.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 			.pNext = nullptr,
 			.flags = 0,
-			.stageCount = static_cast<std::uint32_t>(shaderStages.size()),
+			.stageCount = 2U,
 			.pStages = shaderStages.data(),
 			.pVertexInputState = &vertexInputInfo,
 			.pInputAssemblyState = &inputAssembly,
@@ -822,6 +874,9 @@ Engine::Engine(
 			.basePipelineHandle = nullptr,
 			.basePipelineIndex = -1
 		};
+
+		// Rendering pipeline
+		rasterizer.cullMode = (enableValidation) ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
 
 		shaderStages[0].module = simpleVertShaderModule;
 		shaderStages[1].module = simpleFragShaderModule;
@@ -877,6 +932,10 @@ Engine::Engine(
 		pipelineInfo.layout = this->skyboxPipelineLayout;
 		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->skyboxPipeline));
 
+		// Shadow mapping pipeline
+		pipelineInfo.renderPass = *this->shadowMappingRenderPass;
+		rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT; // Front face culling for shadow map
+
 		shaderStages[0].module = spotlightVertShaderModule;
 		pipelineInfo.stageCount = 1;
 		vertexInputInfo.vertexBindingDescriptionCount = 1;
@@ -884,18 +943,29 @@ Engine::Engine(
 		vertexInputInfo.vertexAttributeDescriptionCount = 1; // Only position is needed
 		vertexInputInfo.pVertexAttributeDescriptions = &materialAttributeDescriptions[0];
 		pipelineInfo.layout = this->spotlightPipelineLayout;
-		pipelineInfo.renderPass = *this->shadowMappingRenderPass;
-		rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT; // Front face culling
-		rasterizer.depthBiasEnable = VK_TRUE; // Enable depth bias
-		dynamicStates.push_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
-		dynamicState = VkPipelineDynamicStateCreateInfo{
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-			.pNext = nullptr,
-			.flags = 0,
-			.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
-			.pDynamicStates = dynamicStates.data()
-		};
 		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->spotlightPipeline));
+
+		shaderStages[0].module = spherelightVertShaderModule;
+		shaderStages[1].module = spherelightFragShaderModule;
+		shaderStages[2].module = spherelightGeomShaderModule;
+		pipelineInfo.stageCount = 3;
+		vertexInputInfo.vertexBindingDescriptionCount = 1;
+		vertexInputInfo.pVertexBindingDescriptions = &materialVertexBindingDescription;
+		vertexInputInfo.vertexAttributeDescriptionCount = 1; // Only position is needed
+		vertexInputInfo.pVertexAttributeDescriptions = &materialAttributeDescriptions[0];
+		pipelineInfo.layout = this->spherelightPipelineLayout;
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->spherelightPipeline));
+
+		shaderStages[0].module = sunlightVertShaderModule;
+		shaderStages[1].module = sunlightGeomShaderModule;
+		shaderStages[1].stage = VK_SHADER_STAGE_GEOMETRY_BIT;
+		pipelineInfo.stageCount = 2;
+		vertexInputInfo.vertexBindingDescriptionCount = 1;
+		vertexInputInfo.pVertexBindingDescriptions = &materialVertexBindingDescription;
+		vertexInputInfo.vertexAttributeDescriptionCount = 1; // Only position is needed
+		vertexInputInfo.pVertexAttributeDescriptions = &materialAttributeDescriptions[0];
+		pipelineInfo.layout = this->sunlightPipelineLayout;
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->sunlightPipeline));
 
 		vkDestroyShaderModule(*this->context.device(), simpleVertShaderModule, nullptr);
 		vkDestroyShaderModule(*this->context.device(), simpleFragShaderModule, nullptr);
@@ -910,7 +980,12 @@ Engine::Engine(
 		vkDestroyShaderModule(*this->context.device(), skyboxVertShaderModule, nullptr);
 		vkDestroyShaderModule(*this->context.device(), skyboxFragShaderModule, nullptr);
 		vkDestroyShaderModule(*this->context.device(), spotlightVertShaderModule, nullptr);
-	}
+		vkDestroyShaderModule(*this->context.device(), spherelightVertShaderModule, nullptr);
+		vkDestroyShaderModule(*this->context.device(), spherelightGeomShaderModule, nullptr);
+		vkDestroyShaderModule(*this->context.device(), spherelightFragShaderModule, nullptr);
+		vkDestroyShaderModule(*this->context.device(), sunlightVertShaderModule, nullptr);
+		vkDestroyShaderModule(*this->context.device(), sunlightGeomShaderModule, nullptr);
+		}
 }
 
 Engine::~Engine(void) {
@@ -932,6 +1007,10 @@ Engine::~Engine(void) {
 	vkDestroyPipelineLayout(*this->context.device(), this->skyboxPipelineLayout, nullptr);
 	vkDestroyPipeline(*this->context.device(), this->spotlightPipeline, nullptr);
 	vkDestroyPipelineLayout(*this->context.device(), this->spotlightPipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->spherelightPipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->spherelightPipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->sunlightPipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->sunlightPipelineLayout, nullptr);
 
 	// Destroy sync objects
 	for (size_t i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; i++) {
@@ -980,6 +1059,7 @@ Engine::~Engine(void) {
 }
 
 void Engine::createSwapchain(void) {
+	this->swapchain.~Swapchain();
 	jjyou::vk::SwapchainBuilder builder(this->context, this->surface);
 	builder
 		.requestSurfaceFormat(VkSurfaceFormatKHR{ .format = VK_FORMAT_B8G8R8A8_SRGB , .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR })

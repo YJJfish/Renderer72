@@ -9,9 +9,12 @@ layout(set = 0, binding = 0) uniform ViewLevelUniform {
 } viewLevelUniform;
 
 struct SunLight {
+	float cascadeSplits[4];
+	mat4 orthographic[4]; // Project points in world space to texture uv
 	vec3 direction; // Object to light, in world space
 	float angle;
 	vec3 tint; // Already multiplied by strength
+	int shadow; // Shadow map size
 };
 
 struct SphereLight {
@@ -22,7 +25,7 @@ struct SphereLight {
 };
 
 struct SpotLight {
-	mat4 lightSpace; // Project points in world space to texture uv
+	mat4 perspective; // Project points in world space to texture uv
 	vec3 position; // In world space
 	float radius;
 	vec3 direction; // Object to light, in world space
@@ -54,7 +57,7 @@ layout(set = 0, binding = 1) readonly buffer Lights {
 layout(set = 0, binding = 2) uniform sampler shadowMapSampler;
 layout(set = 0, binding = 3) uniform texture2D spotLightShadowMaps[4];
 layout(set = 0, binding = 4) uniform textureCube sphereLightShadowMaps[4];
-layout(set = 0, binding = 5) uniform texture2D sunLightShadowMaps[4]; // Cascade shadow maps for a single sun light
+layout(set = 0, binding = 5) uniform texture2DArray sunLightShadowMaps[1];
 
 layout (set = 2, binding = 0) uniform sampler2D normalMapSampler;
 layout (set = 2, binding = 1) uniform sampler2D displacementMapSampler;
@@ -125,12 +128,11 @@ float computeSpotLightShadow(SpotLight spotLight, vec3 fragPosition, sampler sha
 		return 1.0;
 	if (distance >= spotLight.limit)
 		return 0.0;
-	vec4 projectToLight = spotLight.lightSpace * vec4(fragPosition, 1.0);
+	vec4 projectToLight = spotLight.perspective * vec4(fragPosition, 1.0);
 	projectToLight.xyz /= projectToLight.w;
 	projectToLight.xy = projectToLight.xy * 0.5 + 0.5;
-
+	// PCF
 	float dx = 1.05 / float(spotLight.shadow);
-
 	int count = 0;
 	for (int x = -2; x <= 2; ++x) {
 		for (int y = -2; y <= 2; ++y) {
@@ -142,9 +144,21 @@ float computeSpotLightShadow(SpotLight spotLight, vec3 fragPosition, sampler sha
 	return float(count) / 25.0;
 }
 
-/* https://learnopengl.com/Advanced-Lighting/Shadows/Point-Shadows
+vec3 computeSphereLight(SphereLight sphereLight, vec3 fragPosition, vec3 fragNormal, vec3 albedo) {
+	float distance = length(sphereLight.position - fragPosition);
+	if (distance >= sphereLight.limit)
+		return vec3(0.0);
+	distance = max(distance, sphereLight.radius);
+	vec3 lightDir = normalize(sphereLight.position - fragPosition);
+	float NoL = dot(lightDir, fragNormal);
+	if (NoL <= 0.0)
+		return vec3(0.0);
+	return NoL * sphereLight.tint * albedo.rgb / (4.0 * PI * pow2(distance)) * (1.0 - pow4(distance / sphereLight.limit));
+}
+
+/* Reference: https://learnopengl.com/Advanced-Lighting/Shadows/Point-Shadows
  * The PCF filtering of omnidirectional shadow mapping is slightly different from
- * perspective shadow mapping.
+ * that of perspective shadow mapping.
  * We want to sample rays with different directions and use them to fetch texels in the cubemap.
  */
 vec3 sphereLightShadowMapPcfDirections[20] = vec3[]
@@ -156,21 +170,54 @@ vec3 sphereLightShadowMapPcfDirections[20] = vec3[]
    vec3( 0,  1,  1), vec3( 0, -1,  1), vec3( 0, -1, -1), vec3( 0,  1, -1)
 );
 float computeSphereLightShadow(SphereLight sphereLight, vec3 fragPosition, sampler shadowMapSampler, textureCube shadowMapTexture){
-	vec3 lightToFrag = sphereLight.position - fragPosition;
+	vec3 lightToFrag = fragPosition - sphereLight.position;
 	float distance = length(lightToFrag);
 	if (distance <= sphereLight.radius)
 		return 1.0;
 	if (distance >= sphereLight.limit)
 		return 0.0;
 	lightToFrag = normalize(lightToFrag);
+	// PCF
 	int count = 0;
 	for (int i = 0; i < 20; ++i) {
-		float closestDepth = texture(samplerCube(shadowMapTexture, shadowMapSampler), lightToFrag + sphereLightShadowMapPcfDirections[i] * 0.05).r;
+		float closestDepth = texture(samplerCube(shadowMapTexture, shadowMapSampler), lightToFrag + sphereLightShadowMapPcfDirections[i] * 0.01).r;
 		closestDepth = sphereLight.radius + (sphereLight.limit - sphereLight.radius) * closestDepth;
 		if (distance <= closestDepth)
 			count += 1;
 	}
 	return float(count) / 20.0;
+}
+
+vec3 computeSunLight(SunLight sunLight, vec3 fragPosition, vec3 fragNormal, vec3 albedo) {
+	float theta = acos(dot(sunLight.direction, fragNormal)) - sunLight.angle / 2.0;
+	if (theta >= PI / 2.0)
+		return vec3(0.0);
+	theta = max(theta, 0.0);
+	return cos(theta) * sunLight.tint * albedo.rgb;
+}
+
+float computeSunLightShadow(SunLight sunLight, vec3 fragPosition, sampler shadowMapSampler, texture2DArray shadowMapTexture){
+	vec3 viewSpaceFragPosition = vec3(viewLevelUniform.view * vec4(fragPosition, 1.0));
+	int cascadeIndex = 0;
+	for(int i = 0; i < 4; ++i)
+		if(viewSpaceFragPosition.z < sunLight.cascadeSplits[i]) {	
+			cascadeIndex = i;
+			break;
+		}
+	vec4 projectToLight = sunLight.orthographic[cascadeIndex] * vec4(fragPosition, 1.0);
+	projectToLight.xyz /= projectToLight.w;
+	projectToLight.xy = projectToLight.xy * 0.5 + 0.5;
+	// PCF
+	float dx = 1.05 / float(sunLight.shadow);
+	int count = 0;
+	for (int x = -2; x <= 2; ++x) {
+		for (int y = -2; y <= 2; ++y) {
+			float closestDepth = texture(sampler2DArray(shadowMapTexture, shadowMapSampler), vec3(projectToLight.xy + vec2(x, y) * dx, cascadeIndex)).r;
+			if (projectToLight.z <= closestDepth)
+				count += 1;
+		}
+	}
+	return float(count) / 25.0;
 }
 
 void main() {
@@ -188,40 +235,51 @@ void main() {
 	}
     vec3 normal = normalize(TBN * (texture(normalMapSampler, texCoord).xyz * 2.0 - 1.0));
     vec4 albedo = texture(albedoSampler, texCoord);
-	
+
 	outColor = vec4(0.0, 0.0, 0.0, albedo.a);
-	// Analytical lighting
+	// Sun light
 	for (int i = 0; i < lights.numSunLightsNoShadow; ++i) {
-		vec3 lightDir = lights.sunLightsNoShadow[i].direction;
-		float theta = acos(dot(lightDir, normal)) - lights.sunLightsNoShadow[i].angle / 2.0;
-		if (theta >= PI / 2.0)
-			continue;
-		theta = max(theta, 0.0);
-		float NoL = cos(theta);
-		outColor.rgb += NoL * lights.sunLightsNoShadow[i].tint * albedo.rgb;
+		outColor.rgb += computeSunLight(lights.sunLightsNoShadow[i], inPosition, normal, albedo.rgb);
 	}
+	for (int i = 0; i < lights.numSunLights; ++i) {
+		float shadow = computeSunLightShadow(lights.sunLights[i], inPosition, shadowMapSampler, sunLightShadowMaps[i]);
+		outColor.rgb += shadow * computeSunLight(lights.sunLights[i], inPosition, normal, albedo.rgb);
+	}
+	// Sphere light
 	for (int i = 0; i < lights.numSphereLightsNoShadow; ++i) {
-		float distance = length(lights.sphereLightsNoShadow[i].position - inPosition);
-		if (distance >= lights.sphereLightsNoShadow[i].limit)
-			continue;
-		distance = max(distance, lights.sphereLightsNoShadow[i].radius);
-		vec3 lightDir = normalize(lights.sphereLightsNoShadow[i].position - inPosition);
-		float NoL = dot(lightDir, normal);
-		if (NoL <= 0.0)
-			continue;
-		outColor.rgb += NoL * lights.sphereLightsNoShadow[i].tint * albedo.rgb / (4.0 * PI * pow2(distance)) * (1.0 - pow4(distance / lights.sphereLightsNoShadow[i].limit));
+		outColor.rgb += computeSphereLight(lights.sphereLightsNoShadow[i], inPosition, normal, albedo.rgb);
+	}
+	for (int i = 0; i < lights.numSphereLights; ++i) {
+		float shadow = computeSphereLightShadow(lights.sphereLights[i], inPosition, shadowMapSampler, sphereLightShadowMaps[i]);
+		outColor.rgb += shadow * computeSphereLight(lights.sphereLights[i], inPosition, normal, albedo.rgb);
 	}
 	// Spot light
+	for (int i = 0; i < lights.numSpotLightsNoShadow; ++i) {
+		outColor.rgb += computeSpotLight(lights.spotLightsNoShadow[i], inPosition, normal, albedo.rgb);
+	}
 	for (int i = 0; i < lights.numSpotLights; ++i) {
 		float shadow = computeSpotLightShadow(lights.spotLights[i], inPosition, shadowMapSampler, spotLightShadowMaps[i]);
 		outColor.rgb += shadow * computeSpotLight(lights.spotLights[i], inPosition, normal, albedo.rgb);
 	}
-	for (int i = 0; i < lights.numSpotLightsNoShadow; ++i) {
-		outColor.rgb += computeSpotLight(lights.spotLightsNoShadow[i], inPosition, normal, albedo.rgb);
-	}
 	// Environment lighting
     vec3 envLight = textureLod(skyboxLambertianSampler, mat3(skyboxUniform.model) * normal, 0.0).rgb;
     outColor.rgb += envLight * albedo.rgb / PI;
-
 	outColor.rgb = outColor.rgb / (outColor.rgb + vec3(1.0));
+
+
+	vec3 mask = vec3(0.0);
+	vec3 viewSpacePosition = vec3(viewLevelUniform.view * vec4(inPosition, 1.0));
+	if (viewSpacePosition.z <= lights.sunLights[0].cascadeSplits[0])
+		mask = vec3(1.0, 0.8, 0.8);
+	else if (viewSpacePosition.z <= lights.sunLights[0].cascadeSplits[1])
+		mask = vec3(0.8, 1.0, 0.8);
+	else if (viewSpacePosition.z <= lights.sunLights[0].cascadeSplits[2])
+		mask = vec3(0.8, 0.8, 1.0);
+	else if (viewSpacePosition.z <= lights.sunLights[0].cascadeSplits[3])
+		mask = vec3(1.0, 1.0, 0.8);
+	else
+		mask = vec3(0.8, 0.8, 0.8);
+	outColor.rgb = mask * outColor.rgb;
+
+
 }

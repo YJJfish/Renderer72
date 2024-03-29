@@ -841,13 +841,22 @@ s72::Scene72::Ptr Engine::load(
 				if (light->lightType == "sun") {
 					s72::SunLight::Ptr sunLight = std::reinterpret_pointer_cast<s72::SunLight>(light);
 					if (sunLight->shadow == 0U) {
-						if (numSunLightsNoShadow >= Engine::MAX_NUM_SUM_LIGHTS_NO_SHADOW)
-							throw std::runtime_error("The scene can at most have " + std::to_string(Engine::MAX_NUM_SUM_LIGHTS_NO_SHADOW) + " sun lights with no shadow.");
+						if (numSunLightsNoShadow >= Engine::MAX_NUM_SUN_LIGHTS_NO_SHADOW)
+							throw std::runtime_error("The scene can at most have " + std::to_string(Engine::MAX_NUM_SUN_LIGHTS_NO_SHADOW) + " sun lights with no shadow.");
 						++numSunLightsNoShadow;
 					}
 					else {
-						if (numSunLights >= Engine::MAX_NUM_SUM_LIGHTS)
-							throw std::runtime_error("The scene can at most have " + std::to_string(Engine::MAX_NUM_SUM_LIGHTS) + " sun lights with shadow.");
+						if (numSunLights >= Engine::MAX_NUM_SUN_LIGHTS)
+							throw std::runtime_error("The scene can at most have " + std::to_string(Engine::MAX_NUM_SUN_LIGHTS) + " sun lights with shadow.");
+						scene72.sunLightShadowMaps.push_back(ShadowMap(
+							this->context,
+							this->allocator,
+							ShadowMap::Type::Cascade,
+							vk::Extent2D(sunLight->shadow, sunLight->shadow),
+							vk::Format::eD32Sfloat,
+							Engine::NUM_CASCADE_LEVELS,
+							this->shadowMappingRenderPass
+						));
 						++numSunLights;
 					}
 				}
@@ -861,6 +870,15 @@ s72::Scene72::Ptr Engine::load(
 					else {
 						if (numSphereLights >= Engine::MAX_NUM_SPHERE_LIGHTS)
 							throw std::runtime_error("The scene can at most have " + std::to_string(Engine::MAX_NUM_SPHERE_LIGHTS) + " sphere lights with shadow.");
+						scene72.sphereLightShadowMaps.push_back(ShadowMap(
+							this->context,
+							this->allocator,
+							ShadowMap::Type::Omnidirectional,
+							vk::Extent2D(sphereLight->shadow, sphereLight->shadow),
+							vk::Format::eD32Sfloat,
+							6,
+							this->shadowMappingRenderPass
+						));
 						++numSphereLights;
 					}
 				}
@@ -880,6 +898,7 @@ s72::Scene72::Ptr Engine::load(
 							ShadowMap::Type::Perspective,
 							vk::Extent2D(spotLight->shadow, spotLight->shadow),
 							vk::Format::eD32Sfloat,
+							1,
 							this->shadowMappingRenderPass
 						));
 						++numSpotLights;
@@ -909,7 +928,7 @@ s72::Scene72::Ptr Engine::load(
 			vk::BorderColor::eFloatOpaqueWhite,
 			VK_FALSE
 		);
-		scene72.spotLightShadowMapSampler = this->context.device().createSampler(samplerCreateInfo);
+		scene72.shadowMapSampler = this->context.device().createSampler(samplerCreateInfo);
 	}
 	// Create descriptor pool
 	{
@@ -939,11 +958,15 @@ s72::Scene72::Ptr Engine::load(
 		};
 		VkDescriptorPoolSize uniformShadowMapSamplerPoolSize{
 			.type = VK_DESCRIPTOR_TYPE_SAMPLER,
-			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT * (1) // 1 for spot light shadow map sampler
+			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT * (1) // 1 for shadow map sampler
 		};
 		VkDescriptorPoolSize uniformShadowMapTexturePoolSize{
 			.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT * (Engine::MAX_NUM_SPOT_LIGHTS) // MAX_NUM_SPOT_LIGHTS for spot light shadow maps
+			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT * (
+				Engine::MAX_NUM_SPOT_LIGHTS + // MAX_NUM_SPOT_LIGHTS for spot light shadow maps
+				Engine::MAX_NUM_SPHERE_LIGHTS + //MAX_NUM_SPHERE_LIGHTS for sphere light shadow maps
+				Engine::MAX_NUM_SUN_LIGHTS //MAX_NUM_SUN_LIGHTS for sphere light shadow maps
+				)
 		};
 		std::vector<VkDescriptorPoolSize> poolSizes = { uniformBufferPoolSize, uniformBufferDynamicPoolSize, uniformStorageBufferPoolSize, uniformShadowMapSamplerPoolSize, uniformShadowMapTexturePoolSize };
 		if (uniformSamplerPoolSize.descriptorCount > 0)
@@ -1011,15 +1034,25 @@ s72::Scene72::Ptr Engine::load(
 				.offset = 0,
 				.range = sizeof(Engine::Lights)
 			};
-			VkDescriptorImageInfo spotLightShadowMapSamplerInfo3{
-				.sampler = *scene72.spotLightShadowMapSampler,
+			VkDescriptorImageInfo shadowMapSamplerBindInfo3{
+				.sampler = *scene72.shadowMapSampler,
 				.imageView = nullptr,
 				.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED
 			};
 			std::array<VkDescriptorImageInfo, Engine::MAX_NUM_SPOT_LIGHTS> spotLightShadowMapsInfo4{};
 			for (std::uint32_t i = 0; i < numSpotLights; ++i) {
-				spotLightShadowMapsInfo4[i].imageView = *scene72.spotLightShadowMaps[i].inputImageView(i);
+				spotLightShadowMapsInfo4[i].imageView = *scene72.spotLightShadowMaps[i].inputImageView();
 				spotLightShadowMapsInfo4[i].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+			}
+			std::array<VkDescriptorImageInfo, Engine::MAX_NUM_SPHERE_LIGHTS> sphereLightShadowMapsInfo5{};
+			for (std::uint32_t i = 0; i < numSphereLights; ++i) {
+				sphereLightShadowMapsInfo5[i].imageView = *scene72.sphereLightShadowMaps[i].inputImageView();
+				sphereLightShadowMapsInfo5[i].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+			}
+			std::array<VkDescriptorImageInfo, Engine::MAX_NUM_SUN_LIGHTS> sunLightShadowMapsInfo6{};
+			for (std::uint32_t i = 0; i < numSunLights; ++i) {
+				sunLightShadowMapsInfo6[i].imageView = *scene72.sunLightShadowMaps[i].inputImageView();
+				sunLightShadowMapsInfo6[i].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 			}
 			VkWriteDescriptorSet descriptorWrite1{
 				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -1053,7 +1086,7 @@ s72::Scene72::Ptr Engine::load(
 				.dstArrayElement = 0,
 				.descriptorCount = 1,
 				.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
-				.pImageInfo = &spotLightShadowMapSamplerInfo3,
+				.pImageInfo = &shadowMapSamplerBindInfo3,
 				.pBufferInfo = nullptr,
 				.pTexelBufferView = nullptr
 			};
@@ -1069,10 +1102,37 @@ s72::Scene72::Ptr Engine::load(
 				.pBufferInfo = nullptr,
 				.pTexelBufferView = nullptr
 			};
+			VkWriteDescriptorSet descriptorWrite5{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.pNext = nullptr,
+				.dstSet = scene72.frameDescriptorSets[i].viewLevelUniformDescriptorSet,
+				.dstBinding = 4,
+				.dstArrayElement = 0,
+				.descriptorCount = numSphereLights,
+				.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+				.pImageInfo = sphereLightShadowMapsInfo5.data(),
+				.pBufferInfo = nullptr,
+				.pTexelBufferView = nullptr
+			};
+			VkWriteDescriptorSet descriptorWrite6{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.pNext = nullptr,
+				.dstSet = scene72.frameDescriptorSets[i].viewLevelUniformDescriptorSet,
+				.dstBinding = 5,
+				.dstArrayElement = 0,
+				.descriptorCount = numSunLights,
+				.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+				.pImageInfo = sunLightShadowMapsInfo6.data(),
+				.pBufferInfo = nullptr,
+				.pTexelBufferView = nullptr
+			};
 			std::vector<VkWriteDescriptorSet> descriptorWrites = { descriptorWrite1, descriptorWrite2, descriptorWrite3 };
-			if (numSpotLights) {
+			if (numSpotLights)
 				descriptorWrites.push_back(descriptorWrite4);
-			}
+			if (numSphereLights)
+				descriptorWrites.push_back(descriptorWrite5);
+			if (numSunLights)
+				descriptorWrites.push_back(descriptorWrite6);
 			vkUpdateDescriptorSets(*this->context.device(), static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 		}
 	}
@@ -1331,7 +1391,7 @@ void Engine::destroy(s72::Scene72& scene72) {
 	if (scene72.descriptorPool == nullptr)
 		return;
 	// Destroy shadow map sampler
-	scene72.spotLightShadowMapSampler.clear();
+	scene72.shadowMapSampler.clear();
 	// Destroy uniform buffers
 	for (int i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; ++i) {
 		this->allocator.unmap(scene72.frameDescriptorSets[i].viewLevelUniformBufferMemory);
