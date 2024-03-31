@@ -49,7 +49,7 @@ public:
 		if (this != &other) {
 			this->_pContext = other._pContext;
 			other._pContext = nullptr;
-			this->allocator = allocator;
+			this->allocator = other.allocator;
 			this->swapchainImages = std::move(other.swapchainImages);
 			this->swapchainImageMemories = std::move(other.swapchainImageMemories);
 			this->swapchainImageViews = std::move(other.swapchainImageViews);

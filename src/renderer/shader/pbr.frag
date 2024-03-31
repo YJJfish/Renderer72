@@ -9,6 +9,57 @@ layout(set = 0, binding = 0) uniform ViewLevelUniform {
 	vec4 viewPos;
 } viewLevelUniform;
 
+struct SunLight {
+	float cascadeSplits[4];
+	mat4 orthographic[4]; // Project points in world space to texture uv
+	vec3 direction; // Object to light, in world space
+	float angle;
+	vec3 tint; // Already multiplied by strength
+	int shadow; // Shadow map size
+};
+
+struct SphereLight {
+	vec3 position; // In world space
+	float radius;
+	vec3 tint; // Already multiplied by power
+	float limit;
+};
+
+struct SpotLight {
+	mat4 perspective; // Project points in world space to texture uv
+	vec3 position; // In world space
+	float radius;
+	vec3 direction; // Object to light, in world space
+	float fov;
+	vec3 tint; // Already multiplied by power
+	float blend;
+	float limit;
+	int shadow; // Shadow map size
+};
+
+layout(set = 0, binding = 1) readonly buffer Lights {
+
+	int numSunLights;
+	int numSunLightsNoShadow;
+	int numSphereLights;
+	int numSphereLightsNoShadow;
+	int numSpotLights;
+	int numSpotLightsNoShadow;
+
+	SunLight sunLights[1];
+	SunLight sunLightsNoShadow[16];
+	SphereLight sphereLights[4];
+	SphereLight sphereLightsNoShadow[128];
+	SpotLight spotLights[4];
+	SpotLight spotLightsNoShadow[128];
+
+} lights;
+
+layout(set = 0, binding = 2) uniform sampler shadowMapSampler;
+layout(set = 0, binding = 3) uniform texture2D spotLightShadowMaps[4];
+layout(set = 0, binding = 4) uniform textureCube sphereLightShadowMaps[4];
+layout(set = 0, binding = 5) uniform texture2DArray sunLightShadowMaps[1];
+
 layout (set = 2, binding = 0) uniform sampler2D normalMapSampler;
 layout (set = 2, binding = 1) uniform sampler2D displacementMapSampler;
 layout (set = 2, binding = 2) uniform sampler2D albedoSampler;
@@ -29,8 +80,25 @@ layout(location = 3) in vec2 inTexCoord;
 
 layout(location = 0) out vec4 outColor;
 
+vec3 fresnelSchlick(float cosTheta, vec3 F0) {
+	return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
 vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
     return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
+float G_SchlicksmithGGX(float NoL, float NoV, float roughness) {
+	float k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
+	float GL = NoL / (NoL * (1.0 - k) + k);
+	float GV = NoV / (NoV * (1.0 - k) + k);
+	return GL * GV;
+}
+
+float D_GGX(float NoH, float roughness) {
+	float alpha = roughness * roughness;
+	float alpha2 = alpha * alpha;
+	float denom = NoH * NoH * (alpha2 - 1.0) + 1.0;
+	return alpha2 / (PI * denom * denom); 
 }
 
 vec2 parallaxOcclusionMapping(vec2 uv, vec3 tangentViewDir) {
@@ -55,6 +123,164 @@ vec2 parallaxOcclusionMapping(vec2 uv, vec3 tangentViewDir) {
 	return mix(currUV, prevUV, nextDepth / (nextDepth - prevDepth));
 }
 
+float pow2(float x){
+	return x * x;
+}
+
+float pow4(float x){
+	return x * x * x * x;
+}
+
+vec3 computeSpotLight(SpotLight spotLight, vec3 fragPosition, vec3 fragNormal, vec3 viewDir, vec3 F0, vec3 albedo, float roughness, float metalness) {
+	float distance = length(spotLight.position - fragPosition);
+	if (distance >= spotLight.limit)
+		return vec3(0.0);
+	distance = max(distance, spotLight.radius);
+	vec3 lightDir = normalize(spotLight.position - fragPosition);
+	float NoL = dot(lightDir, fragNormal);
+	if (NoL <= 0.0)
+		return vec3(0.0);
+	float phi = acos(dot(lightDir, spotLight.direction));
+	if (phi >= spotLight.fov / 2.0)
+		return vec3(0.0);
+	float blend = min(1.0, (spotLight.fov / 2.0 - phi) / (spotLight.fov * spotLight.blend / 2.0));
+	vec3 lightIntensity = blend * spotLight.tint / (4.0 * PI * pow2(distance)) * (1.0 - pow4(distance / spotLight.limit));
+	// Pbr
+	// Reference: https://github.com/SaschaWillems/Vulkan/blob/master/shaders/glsl/pbrbasic/pbr.frag
+	vec3 H = normalize(viewDir + lightDir);
+	float NoH = clamp(dot(H, fragNormal), 0.0, 1.0);
+	float NoV = clamp(dot(viewDir, fragNormal), 0.0, 1.0);
+	float D = D_GGX(NoH, roughness);
+	float G = G_SchlicksmithGGX(NoL, NoV, roughness);
+	vec3 F_analytic = fresnelSchlick(NoV, F0);
+	vec3 specular = D * F_analytic * G / (4.0 * NoL * NoV + 0.001);
+	vec3 kD = (vec3(1.0) - F_analytic) * (1.0 - metalness);
+	return NoL * lightIntensity * (kD * albedo / PI + specular);
+}
+
+float computeSpotLightShadow(SpotLight spotLight, vec3 fragPosition, sampler shadowMapSampler, texture2D shadowMapTexture){
+	vec3 lightToFrag = spotLight.position - fragPosition;
+	float distance = length(lightToFrag);
+	if (distance <= spotLight.radius)
+		return 1.0;
+	if (distance >= spotLight.limit)
+		return 0.0;
+	vec4 projectToLight = spotLight.perspective * vec4(fragPosition, 1.0);
+	projectToLight.xyz /= projectToLight.w;
+	projectToLight.xy = projectToLight.xy * 0.5 + 0.5;
+	// PCF
+	float dx = 1.05 / float(spotLight.shadow);
+	int count = 0;
+	for (int x = -2; x <= 2; ++x) {
+		for (int y = -2; y <= 2; ++y) {
+			float closestDepth = texture(sampler2D(shadowMapTexture, shadowMapSampler), projectToLight.xy + vec2(x, y) * dx).r;
+			if (projectToLight.z <= closestDepth)
+				count += 1;
+		}
+	}
+	return float(count) / 25.0;
+}
+
+vec3 computeSphereLight(SphereLight sphereLight, vec3 fragPosition, vec3 fragNormal, vec3 viewDir, vec3 F0, vec3 albedo, float roughness, float metalness) {
+	float distance = length(sphereLight.position - fragPosition);
+	if (distance >= sphereLight.limit)
+		return vec3(0.0);
+	distance = max(distance, sphereLight.radius);
+	vec3 lightDir = normalize(sphereLight.position - fragPosition);
+	float NoL = dot(lightDir, fragNormal);
+	if (NoL <= 0.0)
+		return vec3(0.0);
+	vec3 lightIntensity = sphereLight.tint / (4.0 * PI * pow2(distance)) * (1.0 - pow4(distance / sphereLight.limit));
+	// Pbr
+	// Reference: https://github.com/SaschaWillems/Vulkan/blob/master/shaders/glsl/pbrbasic/pbr.frag
+	vec3 H = normalize(viewDir + lightDir);
+	float NoH = clamp(dot(H, fragNormal), 0.0, 1.0);
+	float NoV = clamp(dot(viewDir, fragNormal), 0.0, 1.0);
+	float D = D_GGX(NoH, roughness);
+	float G = G_SchlicksmithGGX(NoL, NoV, roughness);
+	vec3 F_analytic = fresnelSchlick(NoV, F0);
+	vec3 specular = D * F_analytic * G / (4.0 * NoL * NoV + 0.001);
+	vec3 kD = (vec3(1.0) - F_analytic) * (1.0 - metalness);
+	return NoL * lightIntensity * (kD * albedo / PI + specular);
+}
+
+/* Reference: https://learnopengl.com/Advanced-Lighting/Shadows/Point-Shadows
+ * The PCF filtering of omnidirectional shadow mapping is slightly different from
+ * that of perspective shadow mapping.
+ * We want to sample rays with different directions and use them to fetch texels in the cubemap.
+ */
+vec3 sphereLightShadowMapPcfDirections[20] = vec3[]
+(
+   vec3( 1,  1,  1), vec3( 1, -1,  1), vec3(-1, -1,  1), vec3(-1,  1,  1), 
+   vec3( 1,  1, -1), vec3( 1, -1, -1), vec3(-1, -1, -1), vec3(-1,  1, -1),
+   vec3( 1,  1,  0), vec3( 1, -1,  0), vec3(-1, -1,  0), vec3(-1,  1,  0),
+   vec3( 1,  0,  1), vec3(-1,  0,  1), vec3( 1,  0, -1), vec3(-1,  0, -1),
+   vec3( 0,  1,  1), vec3( 0, -1,  1), vec3( 0, -1, -1), vec3( 0,  1, -1)
+);
+float computeSphereLightShadow(SphereLight sphereLight, vec3 fragPosition, sampler shadowMapSampler, textureCube shadowMapTexture){
+	vec3 lightToFrag = fragPosition - sphereLight.position;
+	float distance = length(lightToFrag);
+	if (distance <= sphereLight.radius)
+		return 1.0;
+	if (distance >= sphereLight.limit)
+		return 0.0;
+	lightToFrag = normalize(lightToFrag);
+	// PCF
+	int count = 0;
+	for (int i = 0; i < 20; ++i) {
+		float closestDepth = texture(samplerCube(shadowMapTexture, shadowMapSampler), lightToFrag + sphereLightShadowMapPcfDirections[i] * 0.0005).r;
+		closestDepth = sphereLight.radius + (sphereLight.limit - sphereLight.radius) * closestDepth;
+		if (distance <= closestDepth)
+			count += 1;
+	}
+	return float(count) / 20.0;
+}
+
+vec3 computeSunLight(SunLight sunLight, vec3 fragPosition, vec3 fragNormal, vec3 viewDir, vec3 F0, vec3 albedo, float roughness, float metalness) {
+	vec3 lightDir = sunLight.direction;
+	float theta = acos(dot(lightDir, fragNormal)) - sunLight.angle / 2.0;
+	if (theta >= PI / 2.0)
+		return vec3(0.0);
+	theta = max(theta, 0.0);
+	float NoL = cos(theta);
+	vec3 lightIntensity = sunLight.tint;
+	// Pbr
+	// Reference: https://github.com/SaschaWillems/Vulkan/blob/master/shaders/glsl/pbrbasic/pbr.frag
+	vec3 H = normalize(viewDir + lightDir);
+	float NoH = clamp(dot(H, fragNormal), 0.0, 1.0);
+	float NoV = clamp(dot(viewDir, fragNormal), 0.0, 1.0);
+	float D = D_GGX(NoH, roughness);
+	float G = G_SchlicksmithGGX(NoL, NoV, roughness);
+	vec3 F_analytic = fresnelSchlick(NoV, F0);
+	vec3 specular = D * F_analytic * G / (4.0 * NoL * NoV + 0.001);
+	vec3 kD = (vec3(1.0) - F_analytic) * (1.0 - metalness);
+	return NoL * lightIntensity * (kD * albedo / PI + specular);
+}
+
+float computeSunLightShadow(SunLight sunLight, vec3 fragPosition, sampler shadowMapSampler, texture2DArray shadowMapTexture){
+	vec3 viewSpaceFragPosition = vec3(viewLevelUniform.view * vec4(fragPosition, 1.0));
+	int cascadeIndex = 0;
+	for(int i = 0; i < 4; ++i)
+		if(viewSpaceFragPosition.z < sunLight.cascadeSplits[i]) {	
+			cascadeIndex = i;
+			break;
+		}
+	vec4 projectToLight = sunLight.orthographic[cascadeIndex] * vec4(fragPosition, 1.0);
+	projectToLight.xyz /= projectToLight.w;
+	projectToLight.xy = projectToLight.xy * 0.5 + 0.5;
+	// PCF
+	float dx = 1.05 / float(sunLight.shadow);
+	int count = 0;
+	for (int x = -2; x <= 2; ++x) {
+		for (int y = -2; y <= 2; ++y) {
+			float closestDepth = texture(sampler2DArray(shadowMapTexture, shadowMapSampler), vec3(projectToLight.xy + vec2(x, y) * dx, cascadeIndex)).r;
+			if (projectToLight.z <= closestDepth)
+				count += 1;
+		}
+	}
+	return float(count) / 25.0;
+}
+
 void main() {
     vec3 N = normalize(inNormal);
     vec3 T = normalize(inTangent.xyz);
@@ -65,27 +291,73 @@ void main() {
     vec3 viewDir = normalize(vec3(viewLevelUniform.viewPos) - inPosition);
     vec3 tangentViewDir = normalize(transpose(TBN) * viewDir);
     vec2 texCoord = parallaxOcclusionMapping(inTexCoord, tangentViewDir);
-    if (texCoord.x < 0.0 || texCoord.x > 1.0 || texCoord.y < 0.0 || texCoord.y > 1.0) {
+    /*if (texCoord.x < 0.0 || texCoord.x > 1.0 || texCoord.y < 0.0 || texCoord.y > 1.0) {
 		discard;
-	}
+	}*/
     vec3 normal = normalize(TBN * (texture(normalMapSampler, texCoord).xyz * 2.0 - 1.0));
     vec4 albedo = texture(albedoSampler, texCoord);
     float roughness = texture(roughnessSampler, texCoord).x;
     float metalness = texture(metalnessSampler, texCoord).x;
 
-    vec3 lightDir = reflect(-viewDir, normal);
+	vec3 lightDir = reflect(-viewDir, normal);
     vec3 H = normalize(lightDir + viewDir);
     float NoV = clamp(dot(normal, viewDir), 0.0, 1.0);
-
     vec3 F0 = mix(vec3(DIELECTRIC_SPECULAR), albedo.rgb, metalness);
-    vec3 F = fresnelSchlickRoughness(NoV, F0, roughness);
-    vec3 kD = (1.0 - F) * (1.0 - metalness);
+
+	outColor = vec4(0.0, 0.0, 0.0, albedo.a);
+
+	// Sun light
+	for (int i = 0; i < lights.numSunLightsNoShadow; ++i) {
+		outColor.rgb += computeSunLight(lights.sunLightsNoShadow[i], inPosition, normal, viewDir, F0, albedo.rgb, roughness, metalness);
+	}
+	for (int i = 0; i < lights.numSunLights; ++i) {
+		float shadow = computeSunLightShadow(lights.sunLights[i], inPosition, shadowMapSampler, sunLightShadowMaps[i]);
+		outColor.rgb += shadow * computeSunLight(lights.sunLights[i], inPosition, normal, viewDir, F0, albedo.rgb, roughness, metalness);
+	}
+
+	// Sphere light
+	for (int i = 0; i < lights.numSphereLightsNoShadow; ++i) {
+		outColor.rgb += computeSphereLight(lights.sphereLightsNoShadow[i], inPosition, normal, viewDir, F0, albedo.rgb, roughness, metalness);
+	}
+	for (int i = 0; i < lights.numSphereLights; ++i) {
+		float shadow = computeSphereLightShadow(lights.sphereLights[i], inPosition, shadowMapSampler, sphereLightShadowMaps[i]);
+		outColor.rgb += shadow * computeSphereLight(lights.sphereLights[i], inPosition, normal, viewDir, F0, albedo.rgb, roughness, metalness);
+	}
+
+	// Spot light
+	for (int i = 0; i < lights.numSpotLightsNoShadow; ++i) {
+		outColor.rgb += computeSpotLight(lights.spotLightsNoShadow[i], inPosition, normal, viewDir, F0, albedo.rgb, roughness, metalness);
+	}
+	for (int i = 0; i < lights.numSpotLights; ++i) {
+		float shadow = computeSpotLightShadow(lights.spotLights[i], inPosition, shadowMapSampler, spotLightShadowMaps[i]);
+		outColor.rgb += shadow * computeSpotLight(lights.spotLights[i], inPosition, normal, viewDir, F0, albedo.rgb, roughness, metalness);
+	}
+
+	// Environment lighting
+    vec3 F_ibl = fresnelSchlickRoughness(NoV, F0, roughness);
+    vec3 kD = (1.0 - F_ibl) * (1.0 - metalness);
 
     vec2 Fab = texture(environmentBRDFSampler, vec2(NoV, roughness)).xy;
     vec3 radiance = textureLod(skyboxRadianceSampler, mat3(skyboxUniform.model) * lightDir, roughness * textureQueryLevels(skyboxRadianceSampler)).rgb;
     vec3 irradiance = texture(skyboxLambertianSampler, mat3(skyboxUniform.model) * normal).rgb;
 
-    outColor = vec4((F * Fab.x + Fab.y) * radiance + kD * albedo.rgb * irradiance / PI, albedo.a);
+    outColor.rgb += (F_ibl * Fab.x + Fab.y) * radiance + kD * albedo.rgb * irradiance / PI;
 
+	// Tone mapping
     outColor.rgb = outColor.rgb / (outColor.rgb + vec3(1.0));
+
+
+	/*vec3 mask = vec3(0.0);
+	vec3 viewSpacePosition = vec3(viewLevelUniform.view * vec4(inPosition, 1.0));
+	if (viewSpacePosition.z <= lights.sunLights[0].cascadeSplits[0])
+		mask = vec3(1.0, 0.6, 0.6);
+	else if (viewSpacePosition.z <= lights.sunLights[0].cascadeSplits[1])
+		mask = vec3(0.6, 1.0, 0.6);
+	else if (viewSpacePosition.z <= lights.sunLights[0].cascadeSplits[2])
+		mask = vec3(0.6, 0.6, 1.0);
+	else if (viewSpacePosition.z <= lights.sunLights[0].cascadeSplits[3])
+		mask = vec3(1.0, 1.0, 0.6);
+	else
+		mask = vec3(0.6, 0.6, 0.6);
+	outColor.rgb = mask * outColor.rgb;*/
 }

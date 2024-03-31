@@ -1042,6 +1042,12 @@ Engine::~Engine(void) {
 	vkDestroyImage(*this->context.device(), this->depthImage, nullptr);
 	this->allocator.free(this->depthImageMemory);
 
+	// Destroy
+	if (this->offscreen)
+		this->virtualSwapchain.~VirtualSwapchain();
+	else
+		this->swapchain.~Swapchain();
+
 	// Destroy allocator
 	this->allocator.destory();
 
@@ -1063,8 +1069,7 @@ void Engine::createSwapchain(void) {
 	jjyou::vk::SwapchainBuilder builder(this->context, this->surface);
 	builder
 		.requestSurfaceFormat(VkSurfaceFormatKHR{ .format = VK_FORMAT_B8G8R8A8_SRGB , .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR })
-		.requestPresentMode(::vk::PresentModeKHR::eMailbox)
-		.oldSwapchain(nullptr);
+		.requestPresentMode(::vk::PresentModeKHR::eMailbox);
 	int width, height;
 	glfwGetFramebufferSize(this->window, &width, &height);
 	this->swapchain = builder.build(vk::Extent2D(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)));
@@ -1075,7 +1080,7 @@ void Engine::createFramebuffers(void) {
 		this->framebuffers.resize(this->swapchain.imageCount());
 		for (size_t i = 0; i < this->framebuffers.size(); i++) {
 			std::array<VkImageView, 2> attachments = {
-				*this->swapchain.imageView(i),
+				*this->swapchain.imageView(static_cast<std::uint32_t>(i)),
 				this->depthImageView
 			};
 

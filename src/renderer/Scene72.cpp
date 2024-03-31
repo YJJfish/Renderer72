@@ -1040,19 +1040,19 @@ s72::Scene72::Ptr Engine::load(
 				.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED
 			};
 			std::array<VkDescriptorImageInfo, Engine::MAX_NUM_SPOT_LIGHTS> spotLightShadowMapsInfo4{};
-			for (std::uint32_t i = 0; i < numSpotLights; ++i) {
-				spotLightShadowMapsInfo4[i].imageView = *scene72.spotLightShadowMaps[i].inputImageView();
-				spotLightShadowMapsInfo4[i].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+			for (std::uint32_t l = 0; l < numSpotLights; ++l) {
+				spotLightShadowMapsInfo4[l].imageView = *scene72.spotLightShadowMaps[l].inputImageView();
+				spotLightShadowMapsInfo4[l].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 			}
 			std::array<VkDescriptorImageInfo, Engine::MAX_NUM_SPHERE_LIGHTS> sphereLightShadowMapsInfo5{};
-			for (std::uint32_t i = 0; i < numSphereLights; ++i) {
-				sphereLightShadowMapsInfo5[i].imageView = *scene72.sphereLightShadowMaps[i].inputImageView();
-				sphereLightShadowMapsInfo5[i].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+			for (std::uint32_t l = 0; l < numSphereLights; ++l) {
+				sphereLightShadowMapsInfo5[l].imageView = *scene72.sphereLightShadowMaps[l].inputImageView();
+				sphereLightShadowMapsInfo5[l].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 			}
 			std::array<VkDescriptorImageInfo, Engine::MAX_NUM_SUN_LIGHTS> sunLightShadowMapsInfo6{};
-			for (std::uint32_t i = 0; i < numSunLights; ++i) {
-				sunLightShadowMapsInfo6[i].imageView = *scene72.sunLightShadowMaps[i].inputImageView();
-				sunLightShadowMapsInfo6[i].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+			for (std::uint32_t l = 0; l < numSunLights; ++l) {
+				sunLightShadowMapsInfo6[l].imageView = *scene72.sunLightShadowMaps[l].inputImageView();
+				sunLightShadowMapsInfo6[l].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 			}
 			VkWriteDescriptorSet descriptorWrite1{
 				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,

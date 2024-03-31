@@ -118,7 +118,9 @@ vec3 computeSpotLight(SpotLight spotLight, vec3 fragPosition, vec3 fragNormal, v
 	if (phi >= spotLight.fov / 2.0)
 		return vec3(0.0);
 	float blend = min(1.0, (spotLight.fov / 2.0 - phi) / (spotLight.fov * spotLight.blend / 2.0));
-	return NoL * blend * spotLight.tint * albedo / (4.0 * PI * pow2(distance)) * (1.0 - pow4(distance / spotLight.limit));
+	vec3 lightIntensity = blend * spotLight.tint / (4.0 * PI * pow2(distance)) * (1.0 - pow4(distance / spotLight.limit));
+	// Lambertian
+	return NoL * lightIntensity * albedo;
 }
 
 float computeSpotLightShadow(SpotLight spotLight, vec3 fragPosition, sampler shadowMapSampler, texture2D shadowMapTexture){
@@ -153,7 +155,9 @@ vec3 computeSphereLight(SphereLight sphereLight, vec3 fragPosition, vec3 fragNor
 	float NoL = dot(lightDir, fragNormal);
 	if (NoL <= 0.0)
 		return vec3(0.0);
-	return NoL * sphereLight.tint * albedo.rgb / (4.0 * PI * pow2(distance)) * (1.0 - pow4(distance / sphereLight.limit));
+	vec3 lightIntensity = sphereLight.tint / (4.0 * PI * pow2(distance)) * (1.0 - pow4(distance / sphereLight.limit));
+	// Lambertian
+	return NoL * lightIntensity * albedo;
 }
 
 /* Reference: https://learnopengl.com/Advanced-Lighting/Shadows/Point-Shadows
@@ -180,7 +184,7 @@ float computeSphereLightShadow(SphereLight sphereLight, vec3 fragPosition, sampl
 	// PCF
 	int count = 0;
 	for (int i = 0; i < 20; ++i) {
-		float closestDepth = texture(samplerCube(shadowMapTexture, shadowMapSampler), lightToFrag + sphereLightShadowMapPcfDirections[i] * 0.01).r;
+		float closestDepth = texture(samplerCube(shadowMapTexture, shadowMapSampler), lightToFrag + sphereLightShadowMapPcfDirections[i] * 0.0005).r;
 		closestDepth = sphereLight.radius + (sphereLight.limit - sphereLight.radius) * closestDepth;
 		if (distance <= closestDepth)
 			count += 1;
@@ -193,7 +197,10 @@ vec3 computeSunLight(SunLight sunLight, vec3 fragPosition, vec3 fragNormal, vec3
 	if (theta >= PI / 2.0)
 		return vec3(0.0);
 	theta = max(theta, 0.0);
-	return cos(theta) * sunLight.tint * albedo.rgb;
+	float NoL = cos(theta);
+	vec3 lightIntensity = sunLight.tint;
+	// Lambertian
+	return NoL * lightIntensity * albedo;
 }
 
 float computeSunLightShadow(SunLight sunLight, vec3 fragPosition, sampler shadowMapSampler, texture2DArray shadowMapTexture){
@@ -237,6 +244,7 @@ void main() {
     vec4 albedo = texture(albedoSampler, texCoord);
 
 	outColor = vec4(0.0, 0.0, 0.0, albedo.a);
+
 	// Sun light
 	for (int i = 0; i < lights.numSunLightsNoShadow; ++i) {
 		outColor.rgb += computeSunLight(lights.sunLightsNoShadow[i], inPosition, normal, albedo.rgb);
@@ -245,6 +253,7 @@ void main() {
 		float shadow = computeSunLightShadow(lights.sunLights[i], inPosition, shadowMapSampler, sunLightShadowMaps[i]);
 		outColor.rgb += shadow * computeSunLight(lights.sunLights[i], inPosition, normal, albedo.rgb);
 	}
+
 	// Sphere light
 	for (int i = 0; i < lights.numSphereLightsNoShadow; ++i) {
 		outColor.rgb += computeSphereLight(lights.sphereLightsNoShadow[i], inPosition, normal, albedo.rgb);
@@ -253,6 +262,7 @@ void main() {
 		float shadow = computeSphereLightShadow(lights.sphereLights[i], inPosition, shadowMapSampler, sphereLightShadowMaps[i]);
 		outColor.rgb += shadow * computeSphereLight(lights.sphereLights[i], inPosition, normal, albedo.rgb);
 	}
+
 	// Spot light
 	for (int i = 0; i < lights.numSpotLightsNoShadow; ++i) {
 		outColor.rgb += computeSpotLight(lights.spotLightsNoShadow[i], inPosition, normal, albedo.rgb);
@@ -261,25 +271,28 @@ void main() {
 		float shadow = computeSpotLightShadow(lights.spotLights[i], inPosition, shadowMapSampler, spotLightShadowMaps[i]);
 		outColor.rgb += shadow * computeSpotLight(lights.spotLights[i], inPosition, normal, albedo.rgb);
 	}
+
 	// Environment lighting
     vec3 envLight = textureLod(skyboxLambertianSampler, mat3(skyboxUniform.model) * normal, 0.0).rgb;
     outColor.rgb += envLight * albedo.rgb / PI;
+
+	// Tone mapping
 	outColor.rgb = outColor.rgb / (outColor.rgb + vec3(1.0));
 
-
-	vec3 mask = vec3(0.0);
+	
+	/*vec3 mask = vec3(0.0);
 	vec3 viewSpacePosition = vec3(viewLevelUniform.view * vec4(inPosition, 1.0));
 	if (viewSpacePosition.z <= lights.sunLights[0].cascadeSplits[0])
-		mask = vec3(1.0, 0.8, 0.8);
+		mask = vec3(1.0, 0.6, 0.6);
 	else if (viewSpacePosition.z <= lights.sunLights[0].cascadeSplits[1])
-		mask = vec3(0.8, 1.0, 0.8);
+		mask = vec3(0.6, 1.0, 0.6);
 	else if (viewSpacePosition.z <= lights.sunLights[0].cascadeSplits[2])
-		mask = vec3(0.8, 0.8, 1.0);
+		mask = vec3(0.6, 0.6, 1.0);
 	else if (viewSpacePosition.z <= lights.sunLights[0].cascadeSplits[3])
-		mask = vec3(1.0, 1.0, 0.8);
+		mask = vec3(1.0, 1.0, 0.6);
 	else
-		mask = vec3(0.8, 0.8, 0.8);
-	outColor.rgb = mask * outColor.rgb;
+		mask = vec3(0.6, 0.6, 0.6);
+	outColor.rgb = mask * outColor.rgb;*/
 
 
 }

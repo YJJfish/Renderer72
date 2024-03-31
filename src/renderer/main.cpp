@@ -78,7 +78,7 @@ int main(int argc, char* argv[]) {
 		// Set camera
 		if (argParser.camera.has_value())
 			engine.setCameraMode(
-				Engine::CameraMode::USER,
+				Engine::CameraMode::SCENE,
 				*argParser.camera
 			);
 

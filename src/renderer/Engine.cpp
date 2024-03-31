@@ -26,6 +26,11 @@ void Engine::setCameraMode(CameraMode cameraMode, std::optional<std::string> cam
 }
 
 void Engine::drawFrame() {
+	//std::cout << "ZoomRate: " << this->sceneViewer.getZoomRate() << std::endl;
+	//std::cout << "Center: " << this->sceneViewer.getCenter().x << ", " << this->sceneViewer.getCenter().y << ", " << this->sceneViewer.getCenter().z << std::endl;
+	//std::cout << "Pitch: " << this->sceneViewer.getPitch() << std::endl;
+	//std::cout << "Roll: " << this->sceneViewer.getRoll() << std::endl;
+	//std::cout << "Yaw: " << this->sceneViewer.getYaw() << std::endl;
 	// Compute play time
 	float now = this->clock->now();
 	if (!this->paused) {
@@ -263,7 +268,7 @@ void Engine::drawFrame() {
 			float p = static_cast<float>(i + 1) / static_cast<float>(Engine::NUM_CASCADE_LEVELS);
 			float log = debugNearZ * std::pow(debugFarZ / debugNearZ, p);
 			float uniform = debugNearZ + (debugFarZ - debugNearZ) * p;
-			float d = 0.94f * (log - uniform) + uniform;
+			float d = 0.96f * (log - uniform) + uniform;
 			cascadeSplits[i] = d;
 		}
 		// For each sun light
@@ -347,7 +352,6 @@ void Engine::drawFrame() {
 	std::size_t instanceCount = 0;
 	for (const auto& instancesToDraw : { std::cref(simpleInstances), std::cref(mirrorInstances), std::cref(environmentInstances), std::cref(lambertianInstances), std::cref(pbrInstances) }) {
 		for (const auto& instanceToDraw : instancesToDraw.get()) {
-			VkDeviceSize vertexBufferOffsets = 0;
 			std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
 			instanceCount++;
 			Engine::ObjectLevelUniform objectLevelUniform{
@@ -371,6 +375,7 @@ void Engine::drawFrame() {
 		JJYOU_VK_UTILS_CHECK(vkBeginCommandBuffer(this->frameData[this->currentFrame].graphicsCommandBuffer, &beginInfo));
 
 		// Compute shadow mapping
+
 		for (int i = 0; i < lights.numSpotLights; ++i) {
 			VkClearValue clearValue = VkClearValue{
 				.depthStencil = { 1.0f, 0 }
