@@ -13,6 +13,7 @@
 #include <filesystem>
 
 #include <jjyou/vk/Vulkan.hpp>
+#include "Texture.hpp"
 #include <jjyou/glsl/glsl.hpp>
 #include <jjyou/vis/CameraView.hpp>
 #include <jjyou/io/Json.hpp>
@@ -20,10 +21,14 @@
 #include "ShadowMap.hpp"
 #include "HostImage.hpp"
 #include "Clock.hpp"
+#include "GBuffer.hpp"
+#include "SSAO.hpp"
 
 class Engine {
 
 public:
+
+	jjyou::vk::Context context{ nullptr };
 
 	enum class PlayMode {
 		CYCLE = 0,
@@ -87,6 +92,21 @@ public:
 	struct ObjectLevelUniform {
 		jjyou::glsl::mat4 model{};
 		jjyou::glsl::mat4 normal{};
+	};
+
+	struct SSAOParameters {
+		std::array<jjyou::glsl::vec4, 256> ssaoSamples{};
+	};
+
+	enum class DeferredShadingRenderingMode : int {
+		Scene = 0,
+		SSAO,
+		SSAOBlur,
+		Albedo,
+		Normal,
+		Depth,
+		Metalness,
+		Roughness
 	};
 
 	struct SkyboxUniform {
@@ -157,10 +177,10 @@ public:
 	static constexpr inline std::uint32_t MAX_NUM_SUN_LIGHTS_NO_SHADOW = 16;
 
 	static constexpr inline std::uint32_t MAX_NUM_SPHERE_LIGHTS = 4;
-	static constexpr inline std::uint32_t MAX_NUM_SPHERE_LIGHTS_NO_SHADOW = 128;
+	static constexpr inline std::uint32_t MAX_NUM_SPHERE_LIGHTS_NO_SHADOW = 1024;
 
 	static constexpr inline std::uint32_t MAX_NUM_SPOT_LIGHTS = 4;
-	static constexpr inline std::uint32_t MAX_NUM_SPOT_LIGHTS_NO_SHADOW = 128;
+	static constexpr inline std::uint32_t MAX_NUM_SPOT_LIGHTS_NO_SHADOW = 1024;
 	struct Lights {
 		int numSunLights = 0;
 		int numSunLightsNoShadow = 0;
@@ -241,9 +261,9 @@ public:
 
 	GLFWwindow* window;
 
-	jjyou::vk::Context context{ nullptr };
-
 	vk::raii::SurfaceKHR surface{ nullptr };
+
+	vk::raii::DescriptorPool descriptorPool{ nullptr };
 
 	VkCommandPool graphicsCommandPool, transferCommandPool;
 
@@ -252,40 +272,48 @@ public:
 	jjyou::vk::Swapchain swapchain{ nullptr };
 	VirtualSwapchain virtualSwapchain{ nullptr };
 
+	GBuffer gBuffer{ nullptr };
+	SSAO ssao{ nullptr };
+
 	VkFormat depthImageFormat;
 	VkImage depthImage;
 	jjyou::vk::Memory depthImageMemory;
 	VkImageView depthImageView;
 
-	VkRenderPass renderPass;
-	vk::raii::RenderPass shadowMappingRenderPass{ nullptr };
+	VkRenderPass outputRenderPass;// one color attachment
+	vk::raii::RenderPass deferredRenderPass{ nullptr }; // write to g buffer
+	vk::raii::RenderPass ssaoRenderPass{ nullptr }; // write to ssao
+	vk::raii::RenderPass shadowMappingRenderPass{ nullptr }; // write to depth buffer
 
 	std::vector<VkFramebuffer> framebuffers;
 
 	std::array<FrameData, Engine::MAX_FRAMES_IN_FLIGHT> frameData;
 
 	VkDescriptorSetLayout viewLevelUniformDescriptorSetLayout;
+	VkDescriptorSetLayout viewLevelUniformWithSSAODescriptorSetLayout;
 	VkDescriptorSetLayout objectLevelUniformDescriptorSetLayout;
 	VkDescriptorSetLayout skyboxUniformDescriptorSetLayout;
 	VkDescriptorSetLayout mirrorMaterialLevelUniformDescriptorSetLayout;
 	VkDescriptorSetLayout environmentMaterialLevelUniformDescriptorSetLayout;
 	VkDescriptorSetLayout lambertianMaterialLevelUniformDescriptorSetLayout;
 	VkDescriptorSetLayout pbrMaterialLevelUniformDescriptorSetLayout;
+	VkDescriptorSetLayout ssaoDescriptorSetLayout;
+	VkDescriptorSetLayout ssaoBlurDescriptorSetLayout;
 
-	VkPipelineLayout simplePipelineLayout;
-	VkPipeline simplePipeline;
+	VkPipelineLayout simpleForwardPipelineLayout;
+	VkPipeline simpleForwardPipeline;
 
-	VkPipelineLayout mirrorPipelineLayout;
-	VkPipeline mirrorPipeline;
+	VkPipelineLayout mirrorForwardPipelineLayout;
+	VkPipeline mirrorForwardPipeline;
 
-	VkPipelineLayout environmentPipelineLayout;
-	VkPipeline environmentPipeline;
+	VkPipelineLayout environmentForwardPipelineLayout;
+	VkPipeline environmentForwardPipeline;
 
-	VkPipelineLayout lambertianPipelineLayout;
-	VkPipeline lambertianPipeline;
+	VkPipelineLayout lambertianForwardPipelineLayout;
+	VkPipeline lambertianForwardPipeline;
 
-	VkPipelineLayout pbrPipelineLayout;
-	VkPipeline pbrPipeline;
+	VkPipelineLayout pbrDeferredPipelineLayout;
+	VkPipeline pbrDeferredPipeline;
 
 	VkPipelineLayout skyboxPipelineLayout;
 	VkPipeline skyboxPipeline;
@@ -298,6 +326,18 @@ public:
 
 	VkPipelineLayout sunlightPipelineLayout;
 	VkPipeline sunlightPipeline;
+
+	VkPipelineLayout ssaoPipelineLayout;
+	VkPipeline ssaoPipeline;
+
+	VkPipelineLayout ssaoBlurPipelineLayout;
+	VkPipeline ssaoBlurPipeline;
+
+	VkPipelineLayout deferredShadingCompositionPipelineLayout;
+	VkPipeline deferredShadingCompositionPipeline;
+
+	jjyou::vk::Texture2D ssaoNoise{};
+	SSAOParameters ssaoParameters;
 
 public:
 
@@ -341,6 +381,8 @@ public:
 		VkImageSubresourceRange subresourceRange
 	);
 
-	VkShaderModule createShaderModule(const std::filesystem::path& path) const;
+	vk::raii::ShaderModule createShaderModule(const std::filesystem::path& path) const;
+
+	void updateGBufferAndSSAOSampler(const s72::Scene72& scene) const;
 
 };

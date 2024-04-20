@@ -48,9 +48,9 @@ layout(set = 0, binding = 1) readonly buffer Lights {
 	SunLight sunLights[1];
 	SunLight sunLightsNoShadow[16];
 	SphereLight sphereLights[4];
-	SphereLight sphereLightsNoShadow[128];
+	SphereLight sphereLightsNoShadow[1024];
 	SpotLight spotLights[4];
-	SpotLight spotLightsNoShadow[128];
+	SpotLight spotLightsNoShadow[1024];
 
 } lights;
 

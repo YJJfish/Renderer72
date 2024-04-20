@@ -4,6 +4,7 @@
 #include <vector>
 
 #include <jjyou/vk/Vulkan.hpp>
+#include <jjyou/vk/Legacy/Memory.hpp>
 
 class VirtualSwapchain {
 

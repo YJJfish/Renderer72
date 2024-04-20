@@ -908,6 +908,54 @@ s72::Scene72::Ptr Engine::load(
 			return true;
 		}
 	);
+	if (numSpotLights == 0) {
+		scene72.spotLightShadowMaps.push_back(ShadowMap(
+			this->context,
+			this->allocator,
+			ShadowMap::Type::Perspective,
+			vk::Extent2D(1, 1),
+			vk::Format::eD32Sfloat,
+			1,
+			this->shadowMappingRenderPass
+		));
+		scene72.spotLightShadowMaps.back().transferImageLayout(
+			this->graphicsCommandPool,
+			**this->context.queue(jjyou::vk::Context::QueueType::Main),
+			*this->context.queueFamilyIndex(jjyou::vk::Context::QueueType::Main)
+		);
+	}
+	if (numSphereLights == 0) {
+		scene72.sphereLightShadowMaps.push_back(ShadowMap(
+			this->context,
+			this->allocator,
+			ShadowMap::Type::Omnidirectional,
+			vk::Extent2D(1, 1),
+			vk::Format::eD32Sfloat,
+			6,
+			this->shadowMappingRenderPass
+		));
+		scene72.sphereLightShadowMaps.back().transferImageLayout(
+			this->graphicsCommandPool,
+			**this->context.queue(jjyou::vk::Context::QueueType::Main),
+			*this->context.queueFamilyIndex(jjyou::vk::Context::QueueType::Main)
+		);
+	}
+	if (numSunLights == 0) {
+		scene72.sunLightShadowMaps.push_back(ShadowMap(
+			this->context,
+			this->allocator,
+			ShadowMap::Type::Cascade,
+			vk::Extent2D(1, 1),
+			vk::Format::eD32Sfloat,
+			Engine::NUM_CASCADE_LEVELS,
+			this->shadowMappingRenderPass
+		));
+		scene72.sunLightShadowMaps.back().transferImageLayout(
+			this->graphicsCommandPool,
+			**this->context.queue(jjyou::vk::Context::QueueType::Main),
+			*this->context.queueFamilyIndex(jjyou::vk::Context::QueueType::Main)
+		);
+	}
 	// Create shadow map sampler
 	{
 		vk::SamplerCreateInfo samplerCreateInfo(
@@ -930,72 +978,14 @@ s72::Scene72::Ptr Engine::load(
 		);
 		scene72.shadowMapSampler = this->context.device().createSampler(samplerCreateInfo);
 	}
-	// Create descriptor pool
-	{
-		VkDescriptorPoolSize uniformBufferPoolSize{
-			.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT * (1 + 3) // 1 for projection&view, 3 for skybox model (radiance/lambertian/pbr)
-		};
-		VkDescriptorPoolSize uniformBufferDynamicPoolSize{
-			.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT * (1) // 1 for model
-		};
-		VkDescriptorPoolSize uniformSamplerPoolSize{
-			.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT * (
-				numMirrorMaterials * 2 + // 2 for normal&displacement sampler
-				numEnvironmentMaterials * 2 + // 2 for normal&displacement sampler
-				numLambertianMaterials * 3 + // 3 for normal&displacement&albedo sampler
-				numPbrMaterials * 5 + // 5 for normal&displacement&albedo&roughness&metalness sampler
-				1 + // 1 for skybox radiance sampler
-				1 + // 1 for skybox lambertian sampler
-				1 // 1 for environment BRDF sampler
-				)
-		};
-		VkDescriptorPoolSize uniformStorageBufferPoolSize{
-			.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT * (1) // 1 for lights storage buffer
-		};
-		VkDescriptorPoolSize uniformShadowMapSamplerPoolSize{
-			.type = VK_DESCRIPTOR_TYPE_SAMPLER,
-			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT * (1) // 1 for shadow map sampler
-		};
-		VkDescriptorPoolSize uniformShadowMapTexturePoolSize{
-			.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-			.descriptorCount = Engine::MAX_FRAMES_IN_FLIGHT * (
-				Engine::MAX_NUM_SPOT_LIGHTS + // MAX_NUM_SPOT_LIGHTS for spot light shadow maps
-				Engine::MAX_NUM_SPHERE_LIGHTS + //MAX_NUM_SPHERE_LIGHTS for sphere light shadow maps
-				Engine::MAX_NUM_SUN_LIGHTS //MAX_NUM_SUN_LIGHTS for sphere light shadow maps
-				)
-		};
-		std::vector<VkDescriptorPoolSize> poolSizes = { uniformBufferPoolSize, uniformBufferDynamicPoolSize, uniformStorageBufferPoolSize, uniformShadowMapSamplerPoolSize, uniformShadowMapTexturePoolSize };
-		if (uniformSamplerPoolSize.descriptorCount > 0)
-			poolSizes.push_back(uniformSamplerPoolSize);
-		VkDescriptorPoolCreateInfo poolInfo{
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-			.pNext = nullptr,
-			.flags = 0,
-			.maxSets = static_cast<uint32_t>(Engine::MAX_FRAMES_IN_FLIGHT * (
-				1 + // 1 for view level uniform
-				1 + // 1 for model level uniform
-				numMirrorMaterials +
-				numEnvironmentMaterials +
-				numLambertianMaterials +
-				numPbrMaterials +
-				1 // 1 for skybox uniform
-				)),
-			.poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
-			.pPoolSizes = poolSizes.data()
-		};
-		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorPool(*this->context.device(), &poolInfo, nullptr, &scene72.descriptorPool));
-	}
+	
 	// Create view level descriptor sets
 	{
 		std::vector<VkDescriptorSetLayout> layouts(Engine::MAX_FRAMES_IN_FLIGHT, this->viewLevelUniformDescriptorSetLayout);
 		VkDescriptorSetAllocateInfo allocInfo{
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 			.pNext = nullptr,
-			.descriptorPool = scene72.descriptorPool,
+			.descriptorPool = *this->descriptorPool,
 			.descriptorSetCount = static_cast<uint32_t>(layouts.size()),
 			.pSetLayouts = layouts.data()
 		};
@@ -1044,14 +1034,26 @@ s72::Scene72::Ptr Engine::load(
 				spotLightShadowMapsInfo4[l].imageView = *scene72.spotLightShadowMaps[l].inputImageView();
 				spotLightShadowMapsInfo4[l].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 			}
+			for (std::uint32_t l = numSpotLights; l < Engine::MAX_NUM_SPOT_LIGHTS; ++l) {
+				spotLightShadowMapsInfo4[l].imageView = *scene72.spotLightShadowMaps.back().inputImageView();
+				spotLightShadowMapsInfo4[l].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+			}
 			std::array<VkDescriptorImageInfo, Engine::MAX_NUM_SPHERE_LIGHTS> sphereLightShadowMapsInfo5{};
 			for (std::uint32_t l = 0; l < numSphereLights; ++l) {
 				sphereLightShadowMapsInfo5[l].imageView = *scene72.sphereLightShadowMaps[l].inputImageView();
 				sphereLightShadowMapsInfo5[l].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 			}
+			for (std::uint32_t l = numSphereLights; l < Engine::MAX_NUM_SPHERE_LIGHTS; ++l) {
+				sphereLightShadowMapsInfo5[l].imageView = *scene72.sphereLightShadowMaps.back().inputImageView();
+				sphereLightShadowMapsInfo5[l].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+			}
 			std::array<VkDescriptorImageInfo, Engine::MAX_NUM_SUN_LIGHTS> sunLightShadowMapsInfo6{};
 			for (std::uint32_t l = 0; l < numSunLights; ++l) {
 				sunLightShadowMapsInfo6[l].imageView = *scene72.sunLightShadowMaps[l].inputImageView();
+				sunLightShadowMapsInfo6[l].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+			}
+			for (std::uint32_t l = numSunLights; l < Engine::MAX_NUM_SUN_LIGHTS; ++l) {
+				sunLightShadowMapsInfo6[l].imageView = *scene72.sunLightShadowMaps.back().inputImageView();
 				sunLightShadowMapsInfo6[l].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 			}
 			VkWriteDescriptorSet descriptorWrite1{
@@ -1096,7 +1098,7 @@ s72::Scene72::Ptr Engine::load(
 				.dstSet = scene72.frameDescriptorSets[i].viewLevelUniformDescriptorSet,
 				.dstBinding = 3,
 				.dstArrayElement = 0,
-				.descriptorCount = numSpotLights,
+				.descriptorCount = Engine::MAX_NUM_SPOT_LIGHTS,
 				.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
 				.pImageInfo = spotLightShadowMapsInfo4.data(),
 				.pBufferInfo = nullptr,
@@ -1108,7 +1110,7 @@ s72::Scene72::Ptr Engine::load(
 				.dstSet = scene72.frameDescriptorSets[i].viewLevelUniformDescriptorSet,
 				.dstBinding = 4,
 				.dstArrayElement = 0,
-				.descriptorCount = numSphereLights,
+				.descriptorCount = Engine::MAX_NUM_SPHERE_LIGHTS,
 				.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
 				.pImageInfo = sphereLightShadowMapsInfo5.data(),
 				.pBufferInfo = nullptr,
@@ -1120,29 +1122,240 @@ s72::Scene72::Ptr Engine::load(
 				.dstSet = scene72.frameDescriptorSets[i].viewLevelUniformDescriptorSet,
 				.dstBinding = 5,
 				.dstArrayElement = 0,
-				.descriptorCount = numSunLights,
+				.descriptorCount = Engine::MAX_NUM_SUN_LIGHTS,
 				.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
 				.pImageInfo = sunLightShadowMapsInfo6.data(),
 				.pBufferInfo = nullptr,
 				.pTexelBufferView = nullptr
 			};
 			std::vector<VkWriteDescriptorSet> descriptorWrites = { descriptorWrite1, descriptorWrite2, descriptorWrite3 };
-			if (numSpotLights)
-				descriptorWrites.push_back(descriptorWrite4);
-			if (numSphereLights)
-				descriptorWrites.push_back(descriptorWrite5);
-			if (numSunLights)
-				descriptorWrites.push_back(descriptorWrite6);
+			descriptorWrites.push_back(descriptorWrite4);
+			descriptorWrites.push_back(descriptorWrite5);
+			descriptorWrites.push_back(descriptorWrite6);
 			vkUpdateDescriptorSets(*this->context.device(), static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 		}
 	}
+	// Create view level descriptor sets with SSAO
+	{
+		std::vector<VkDescriptorSetLayout> layouts(Engine::MAX_FRAMES_IN_FLIGHT, this->viewLevelUniformWithSSAODescriptorSetLayout);
+		VkDescriptorSetAllocateInfo allocInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+			.pNext = nullptr,
+			.descriptorPool = *this->descriptorPool,
+			.descriptorSetCount = static_cast<uint32_t>(layouts.size()),
+			.pSetLayouts = layouts.data()
+		};
+		std::array<VkDescriptorSet, Engine::MAX_FRAMES_IN_FLIGHT> viewLevelUniformWithSSAODescriptorSets{};
+		JJYOU_VK_UTILS_CHECK(vkAllocateDescriptorSets(*this->context.device(), &allocInfo, viewLevelUniformWithSSAODescriptorSets.data()));
+		for (size_t i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; i++) {
+			scene72.frameDescriptorSets[i].viewLevelUniformWithSSAODescriptorSet = viewLevelUniformWithSSAODescriptorSets[i];
+		}
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			VkDescriptorBufferInfo bufferInfo1{
+				.buffer = scene72.frameDescriptorSets[i].viewLevelUniformBuffer,
+				.offset = 0,
+				.range = sizeof(Engine::ViewLevelUniform)
+			};
+			VkDescriptorBufferInfo bufferInfo2{
+				.buffer = *scene72.frameDescriptorSets[i].lightsBuffer,
+				.offset = 0,
+				.range = sizeof(Engine::Lights)
+			};
+			VkDescriptorImageInfo shadowMapSamplerBindInfo3{
+				.sampler = *scene72.shadowMapSampler,
+				.imageView = nullptr,
+				.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED
+			};
+			std::array<VkDescriptorImageInfo, Engine::MAX_NUM_SPOT_LIGHTS> spotLightShadowMapsInfo4{};
+			for (std::uint32_t l = 0; l < numSpotLights; ++l) {
+				spotLightShadowMapsInfo4[l].imageView = *scene72.spotLightShadowMaps[l].inputImageView();
+				spotLightShadowMapsInfo4[l].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+			}
+			for (std::uint32_t l = numSpotLights; l < Engine::MAX_NUM_SPOT_LIGHTS; ++l) {
+				spotLightShadowMapsInfo4[l].imageView = *scene72.spotLightShadowMaps.back().inputImageView();
+				spotLightShadowMapsInfo4[l].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+			}
+			std::array<VkDescriptorImageInfo, Engine::MAX_NUM_SPHERE_LIGHTS> sphereLightShadowMapsInfo5{};
+			for (std::uint32_t l = 0; l < numSphereLights; ++l) {
+				sphereLightShadowMapsInfo5[l].imageView = *scene72.sphereLightShadowMaps[l].inputImageView();
+				sphereLightShadowMapsInfo5[l].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+			}
+			for (std::uint32_t l = numSphereLights; l < Engine::MAX_NUM_SPHERE_LIGHTS; ++l) {
+				sphereLightShadowMapsInfo5[l].imageView = *scene72.sphereLightShadowMaps.back().inputImageView();
+				sphereLightShadowMapsInfo5[l].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+			}
+			std::array<VkDescriptorImageInfo, Engine::MAX_NUM_SUN_LIGHTS> sunLightShadowMapsInfo6{};
+			for (std::uint32_t l = 0; l < numSunLights; ++l) {
+				sunLightShadowMapsInfo6[l].imageView = *scene72.sunLightShadowMaps[l].inputImageView();
+				sunLightShadowMapsInfo6[l].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+			}
+			for (std::uint32_t l = numSunLights; l < Engine::MAX_NUM_SUN_LIGHTS; ++l) {
+				sunLightShadowMapsInfo6[l].imageView = *scene72.sunLightShadowMaps.back().inputImageView();
+				sunLightShadowMapsInfo6[l].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+			}
+			VkWriteDescriptorSet descriptorWrite1{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.pNext = nullptr,
+				.dstSet = scene72.frameDescriptorSets[i].viewLevelUniformWithSSAODescriptorSet,
+				.dstBinding = 0,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				.pImageInfo = nullptr,
+				.pBufferInfo = &bufferInfo1,
+				.pTexelBufferView = nullptr
+			};
+			VkWriteDescriptorSet descriptorWrite2{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.pNext = nullptr,
+				.dstSet = scene72.frameDescriptorSets[i].viewLevelUniformWithSSAODescriptorSet,
+				.dstBinding = 1,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.pImageInfo = nullptr,
+				.pBufferInfo = &bufferInfo2,
+				.pTexelBufferView = nullptr
+			};
+			VkWriteDescriptorSet descriptorWrite3{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.pNext = nullptr,
+				.dstSet = scene72.frameDescriptorSets[i].viewLevelUniformWithSSAODescriptorSet,
+				.dstBinding = 2,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+				.pImageInfo = &shadowMapSamplerBindInfo3,
+				.pBufferInfo = nullptr,
+				.pTexelBufferView = nullptr
+			};
+			VkWriteDescriptorSet descriptorWrite4{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.pNext = nullptr,
+				.dstSet = scene72.frameDescriptorSets[i].viewLevelUniformWithSSAODescriptorSet,
+				.dstBinding = 3,
+				.dstArrayElement = 0,
+				.descriptorCount = Engine::MAX_NUM_SPOT_LIGHTS,
+				.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+				.pImageInfo = spotLightShadowMapsInfo4.data(),
+				.pBufferInfo = nullptr,
+				.pTexelBufferView = nullptr
+			};
+			VkWriteDescriptorSet descriptorWrite5{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.pNext = nullptr,
+				.dstSet = scene72.frameDescriptorSets[i].viewLevelUniformWithSSAODescriptorSet,
+				.dstBinding = 4,
+				.dstArrayElement = 0,
+				.descriptorCount = Engine::MAX_NUM_SPHERE_LIGHTS,
+				.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+				.pImageInfo = sphereLightShadowMapsInfo5.data(),
+				.pBufferInfo = nullptr,
+				.pTexelBufferView = nullptr
+			};
+			VkWriteDescriptorSet descriptorWrite6{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.pNext = nullptr,
+				.dstSet = scene72.frameDescriptorSets[i].viewLevelUniformWithSSAODescriptorSet,
+				.dstBinding = 5,
+				.dstArrayElement = 0,
+				.descriptorCount = Engine::MAX_NUM_SUN_LIGHTS,
+				.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+				.pImageInfo = sunLightShadowMapsInfo6.data(),
+				.pBufferInfo = nullptr,
+				.pTexelBufferView = nullptr
+			};
+			std::vector<VkWriteDescriptorSet> descriptorWrites = { descriptorWrite1, descriptorWrite2, descriptorWrite3 };
+			descriptorWrites.push_back(descriptorWrite4);
+			descriptorWrites.push_back(descriptorWrite5);
+			descriptorWrites.push_back(descriptorWrite6);
+			vkUpdateDescriptorSets(*this->context.device(), static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+		}
+	}
+	// Create SSAO descriptor set
+	{
+		VkDescriptorSetAllocateInfo allocInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+			.pNext = nullptr,
+			.descriptorPool = *this->descriptorPool,
+			.descriptorSetCount = 1,
+			.pSetLayouts = &this->ssaoDescriptorSetLayout
+		};
+		VkDescriptorSet ssaoDescriptorSet_{};
+		JJYOU_VK_UTILS_CHECK(vkAllocateDescriptorSets(*this->context.device(), &allocInfo, &ssaoDescriptorSet_));
+		scene72.ssaoDescriptorSet = vk::raii::DescriptorSet(this->context.device(), ssaoDescriptorSet_, *this->descriptorPool);
+		{
+			std::tie(scene72.ssaoSampleUniformBuffer, scene72.ssaoSampleUniformBufferMemory) =
+				this->createBuffer(
+					sizeof(Engine::SSAOParameters),
+					VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+					{ *this->context.queueFamilyIndex(jjyou::vk::Context::QueueType::Main) },
+					VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+				);
+			this->allocator.map(scene72.ssaoSampleUniformBufferMemory);
+			memcpy(scene72.ssaoSampleUniformBufferMemory.mappedAddress(), &this->ssaoParameters, sizeof(Engine::SSAOParameters));
+		}
+		{
+			VkDescriptorBufferInfo bufferInfo1{
+				.buffer = scene72.ssaoSampleUniformBuffer,
+				.offset = 0,
+				.range = sizeof(Engine::SSAOParameters)
+			};
+			VkDescriptorImageInfo imageInfo2{
+				.sampler = this->ssaoNoise.sampler(),
+				.imageView = this->ssaoNoise.imageView(),
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			};
+			VkWriteDescriptorSet descriptorWrite1{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.pNext = nullptr,
+				.dstSet = *scene72.ssaoDescriptorSet,
+				.dstBinding = 0,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				.pImageInfo = nullptr,
+				.pBufferInfo = &bufferInfo1,
+				.pTexelBufferView = nullptr
+			};
+			VkWriteDescriptorSet descriptorWrite2{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.pNext = nullptr,
+				.dstSet = *scene72.ssaoDescriptorSet,
+				.dstBinding = 1,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.pImageInfo = &imageInfo2,
+				.pBufferInfo = nullptr,
+				.pTexelBufferView = nullptr
+			};
+			std::vector<VkWriteDescriptorSet> descriptorWrites{ descriptorWrite1 , descriptorWrite2 };
+			vkUpdateDescriptorSets(*this->context.device(), static_cast<std::uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+		}
+	}
+	// Create SSAO blur descriptor set
+	{
+		VkDescriptorSetAllocateInfo allocInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+			.pNext = nullptr,
+			.descriptorPool = *this->descriptorPool,
+			.descriptorSetCount = 1,
+			.pSetLayouts = &this->ssaoBlurDescriptorSetLayout
+		};
+		VkDescriptorSet ssaoBlurDescriptorSet_{};
+		JJYOU_VK_UTILS_CHECK(vkAllocateDescriptorSets(*this->context.device(), &allocInfo, &ssaoBlurDescriptorSet_));
+		scene72.ssaoBlurDescriptorSet = vk::raii::DescriptorSet(this->context.device(), ssaoBlurDescriptorSet_, *this->descriptorPool);
+	}
+	// Update SSAO related descriptor sets
+	this->updateGBufferAndSSAOSampler(scene72);
 	// Create object level descriptor sets
 	{
 		std::vector<VkDescriptorSetLayout> layouts(Engine::MAX_FRAMES_IN_FLIGHT, this->objectLevelUniformDescriptorSetLayout);
 		VkDescriptorSetAllocateInfo allocInfo{
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 			.pNext = nullptr,
-			.descriptorPool = scene72.descriptorPool,
+			.descriptorPool = *this->descriptorPool,
 			.descriptorSetCount = static_cast<uint32_t>(layouts.size()),
 			.pSetLayouts = layouts.data()
 		};
@@ -1208,7 +1421,7 @@ s72::Scene72::Ptr Engine::load(
 		VkDescriptorSetAllocateInfo allocInfo{
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 			.pNext = nullptr,
-			.descriptorPool = scene72.descriptorPool,
+			.descriptorPool = *this->descriptorPool,
 			.descriptorSetCount = static_cast<uint32_t>(layouts.size()),
 			.pSetLayouts = layouts.data()
 		};
@@ -1315,7 +1528,7 @@ s72::Scene72::Ptr Engine::load(
 				VkDescriptorSetAllocateInfo allocInfo{
 					.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 					.pNext = nullptr,
-					.descriptorPool = scene72.descriptorPool,
+					.descriptorPool = *this->descriptorPool,
 					.descriptorSetCount = static_cast<uint32_t>(layouts.size()),
 					.pSetLayouts = layouts.data()
 				};
@@ -1388,8 +1601,7 @@ void Engine::destroy(s72::Scene72& scene72) {
 	scene72.defaultMaterial.reset();
 	scene72.graph.clear();
 	scene72.currPlayTime = scene72.minTime = scene72.maxTime = 0.0f;
-	if (scene72.descriptorPool == nullptr)
-		return;
+	
 	// Destroy shadow map sampler
 	scene72.shadowMapSampler.clear();
 	// Destroy uniform buffers
@@ -1409,13 +1621,14 @@ void Engine::destroy(s72::Scene72& scene72) {
 			this->allocator.free(scene72.frameDescriptorSets[i].skyboxUniformBufferMemory);
 		}
 	}
-	// Destroy descriptor pool
-	vkDestroyDescriptorPool(*this->context.device(), scene72.descriptorPool, nullptr);
+	this->allocator.unmap(scene72.ssaoSampleUniformBufferMemory);
+	vkDestroyBuffer(*this->context.device(), scene72.ssaoSampleUniformBuffer, nullptr);
+	this->allocator.free(scene72.ssaoSampleUniformBufferMemory);
+	
 	// Destroy shadow map
 	scene72.sunLightShadowMaps.clear();
 	scene72.sphereLightShadowMaps.clear();
 	scene72.spotLightShadowMaps.clear();
-	scene72.descriptorPool = nullptr;
 }
 
 bool s72::Scene72::traverse(

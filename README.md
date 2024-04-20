@@ -41,6 +41,10 @@ A scene with only a quad (All the "geometry" is achieved with normal mapping and
 
 [![v2.0 Model](https://img.youtube.com/vi/0MdJOjzism4/0.jpg)](https://www.youtube.com/watch?v=0MdJOjzism4)
 
-### v3.0 (Under development)
+### v3.0 (Finished. README to be updated.)
 
 Analytical lighting & Shadow mapping
+
+### v4.0 (Finished. README to be updated.)
+
+Deferred shading & SSAO

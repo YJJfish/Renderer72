@@ -32,7 +32,9 @@ if (maek.OS === 'linux') {
 	maek.options.CPPFlags = [
 		'-O2',
 		`-I${VULKAN_SDK}/include`,
-		`-IjjyouLib/include`,
+		`-Idep`,
+		`-Idep/jjyouLib/include`,
+		`-Idep/imgui`,
 	];
 
 	maek.options.LINKLibs = [
@@ -51,6 +53,7 @@ if (maek.OS === 'linux') {
 		'/wd4201', //nameless struct/union
 		'/wd4146', //-1U is unsigned
 		'/wd4458', // The declaration of identifier in the local scope hides the declaration of the identically-named identifier at class scope
+		'/wd4244', // Conversion
 	];
 	maek.options.LINK = [
 		'link.exe', '/nologo',
@@ -66,7 +69,9 @@ if (maek.OS === 'linux') {
 	maek.options.CPPFlags = [
 		`/I${VULKAN_SDK}/Include`,
 		`/IE:/Library/glfw/include`,
-		`/IjjyouLib/include`,
+		`-Idep`,
+		`-Idep/jjyouLib/include`,
+		`-Idep/imgui`,
 		'/O2',
 	];
 } else if (maek.OS === 'macos') {
@@ -80,7 +85,9 @@ if (maek.OS === 'linux') {
 	maek.options.CPPFlags = [
 		'-O2',
 		`-I${VULKAN_SDK}/include`,
-		`-IjjyouLib/include`,
+		`-Idep`,
+		`-Idep/jjyouLib/include`,
+		`-Idep/imgui`,
 	];
 
 	maek.options.LINKLibs = [
@@ -95,33 +102,6 @@ if (maek.OS === 'linux') {
 	process.exit(1);
 }
 
-const Viewer_objs = [
-	maek.CPP('main.cpp'),
-];
-
-const Culling_objs = [
-	maek.CPP('Culling.cpp'),
-];
-
-const EventFile_objs = [
-	maek.CPP('EventFile.cpp'),
-];
-
-const HostImage_objs = [
-	maek.CPP('HostImage.cpp'),
-];
-
-const Scene72_objs = [
-	maek.CPP('Scene72.cpp'),
-];
-
-const TinyArgParser_objs = [
-	maek.CPP('TinyArgParser.cpp'),
-];
-
-const VirtualSwapchain_objs = [
-	maek.CPP('VirtualSwapchain.cpp'),
-];
 
 
 maek.DEFAULT_OPTIONS.GLSLC = [`${VULKAN_SDK}/bin/glslc` + (maek.OS === 'windows' ? '.exe' : ''), '-Werror'];
@@ -176,22 +156,57 @@ maek.GLSLC = (glslFile, spirvFileBase, localOptions = {}) => {
 	return spirvFile;
 };
 
-const shaders = [
-	maek.GLSLC('shader.vert'),
-	maek.GLSLC('shader.frag'),
-];
+renderer_shaders = [
+	maek.GLSLC('./renderer/shader/simpleForward.vert'),
+	maek.GLSLC('./renderer/shader/simpleForward.frag'),
+	maek.GLSLC('./renderer/shader/materialForward.vert'),
+	maek.GLSLC('./renderer/shader/mirrorForward.frag'),
+	maek.GLSLC('./renderer/shader/environmentForward.frag'),
+	maek.GLSLC('./renderer/shader/lambertianForward.frag'),
+	maek.GLSLC('./renderer/shader/pbrDeferred.vert'),
+	maek.GLSLC('./renderer/shader/pbrDeferred.frag'),
+	maek.GLSLC('./renderer/shader/skybox.vert'),
+	maek.GLSLC('./renderer/shader/skybox.frag'),
+	maek.GLSLC('./renderer/shader/spotlight.vert'),
+	maek.GLSLC('./renderer/shader/spherelight.vert'),
+	maek.GLSLC('./renderer/shader/spherelight.geom'),
+	maek.GLSLC('./renderer/shader/spherelight.frag'),
+	maek.GLSLC('./renderer/shader/sunlight.vert'),
+	maek.GLSLC('./renderer/shader/sunlight.geom'),
+	maek.GLSLC('./renderer/shader/fullscreen.vert'),
+	maek.GLSLC('./renderer/shader/ssao.frag'),
+	maek.GLSLC('./renderer/shader/ssaoBlur.frag'),
+	maek.GLSLC('./renderer/shader/deferredShadingComposition.frag'),
+]
 
-const Engine_objs = [
-	maek.CPP('Engine.cpp'),
-	maek.CPP('EngineInit.cpp', undefined, { depends:[...shaders] } ),
-	maek.CPP('EngineEventCallback.cpp'),
-	maek.CPP('EngineUtils.cpp'),
-];
+const viewer_exe = maek.LINK([
+	maek.CPP('./renderer/main.cpp'),
+	maek.CPP('./renderer/Engine.cpp'),
+	maek.CPP('./renderer/EngineInit.cpp', undefined, { depends:[...renderer_shaders] } ),
+	maek.CPP('./renderer/EngineEventCallback.cpp'),
+	maek.CPP('./renderer/EngineUtils.cpp'),
+	maek.CPP('./renderer/Culling.cpp'),
+	maek.CPP('./renderer/EventFile.cpp'),
+	maek.CPP('./renderer/HostImage.cpp'),
+	maek.CPP('./renderer/Scene72.cpp'),
+	maek.CPP('./renderer/TinyArgParser.cpp'),
+	maek.CPP('./renderer/VirtualSwapchain.cpp'),
+	maek.CPP('./renderer/Texture.cpp'),
+	maek.CPP('./renderer/GBuffer.cpp'),
+	maek.CPP('./renderer/SSAO.cpp'),
+	maek.CPP('./renderer/impl.cpp'),
+	maek.CPP('./dep/imgui/imgui.cpp'),
+	maek.CPP('./dep/imgui/imgui_demo.cpp'),
+	maek.CPP('./dep/imgui/imgui_draw.cpp'),
+	maek.CPP('./dep/imgui/imgui_tables.cpp'),
+	maek.CPP('./dep/imgui/imgui_widgets.cpp'),
+	maek.CPP('./dep/imgui/backends/imgui_impl_glfw.cpp'),
+	maek.CPP('./dep/imgui/backends/imgui_impl_vulkan.cpp'),
 
-const viewer_exe = maek.LINK([...Viewer_objs, ...Engine_objs, ...Culling_objs, ...EventFile_objs, ...HostImage_objs, ...Scene72_objs, ...TinyArgParser_objs, ...VirtualSwapchain_objs], 'bin/viewer');
+], './bin/viewer');
 
 //default targets:
-maek.TARGETS = [viewer_exe, ...shaders];
+maek.TARGETS = [viewer_exe, ...renderer_shaders];
 
 //======================================================================
 //Now, onward to the code that makes all this work:

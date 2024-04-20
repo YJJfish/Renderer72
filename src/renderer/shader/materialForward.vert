@@ -17,9 +17,9 @@ layout(location = 2) in vec4 inTangent;
 layout(location = 3) in vec2 inTexCoord;
 layout(location = 4) in vec4 inColor;
 
-layout(location = 0) out vec3 outPosition;
-layout(location = 1) out vec3 outNormal;
-layout(location = 2) out vec4 outTangent;
+layout(location = 0) out vec3 outPosition; // In view space
+layout(location = 1) out vec3 outNormal; // In view space
+layout(location = 2) out vec4 outTangent; // In view space
 layout(location = 3) out vec2 outTexCoord;
 
 

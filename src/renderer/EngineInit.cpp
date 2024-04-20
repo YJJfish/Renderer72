@@ -1,5 +1,9 @@
 #include "Engine.hpp"
 #include <fstream>
+#include <random>
+#include <imgui.h>
+#include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_vulkan.h>
 
 Engine::Engine(
 	std::optional<std::string> physicalDeviceName,
@@ -106,6 +110,28 @@ Engine::Engine(
 		}
 	}
 
+	// Create descriptor pool
+	{
+		std::vector<vk::DescriptorPoolSize> descriptorPoolSizes = {
+		vk::DescriptorPoolSize(vk::DescriptorType::eSampler, 1000),
+		vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, 1000),
+		vk::DescriptorPoolSize(vk::DescriptorType::eSampledImage, 1000),
+		vk::DescriptorPoolSize(vk::DescriptorType::eStorageImage, 1000),
+		vk::DescriptorPoolSize(vk::DescriptorType::eUniformTexelBuffer, 1000),
+		vk::DescriptorPoolSize(vk::DescriptorType::eStorageTexelBuffer, 1000),
+		vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, 1000),
+		vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, 1000),
+		vk::DescriptorPoolSize(vk::DescriptorType::eUniformBufferDynamic, 1000),
+		vk::DescriptorPoolSize(vk::DescriptorType::eStorageBufferDynamic, 1000),
+		vk::DescriptorPoolSize(vk::DescriptorType::eInputAttachment, 1000),
+		};
+		vk::DescriptorPoolCreateInfo descriptorPoolCreateInfo = vk::DescriptorPoolCreateInfo()
+			.setFlags(vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet)
+			.setMaxSets(1000)
+			.setPoolSizes(descriptorPoolSizes);
+		this->descriptorPool = vk::raii::DescriptorPool(this->context.device(), descriptorPoolCreateInfo);
+	}
+
 	// Init memory allocator
 	this->allocator.init(*this->context.device());
 
@@ -193,7 +219,179 @@ Engine::Engine(
 		this->shadowMappingRenderPass = this->context.device().createRenderPass(renderPassInfo);
 	}
 
-	// Create renderpass
+	// Create deferred shading renderpass
+	{
+		vk::AttachmentDescription colorAttachmentDescription = vk::AttachmentDescription()
+			.setFlags(vk::AttachmentDescriptionFlags(0U))
+			//.setFormat()
+			.setSamples(vk::SampleCountFlagBits::e1)
+			.setLoadOp(vk::AttachmentLoadOp::eClear)
+			.setStoreOp(vk::AttachmentStoreOp::eStore)
+			.setStencilLoadOp(vk::AttachmentLoadOp::eDontCare)
+			.setStencilStoreOp(vk::AttachmentStoreOp::eDontCare)
+			.setInitialLayout(vk::ImageLayout::eUndefined)
+			.setFinalLayout(vk::ImageLayout::eShaderReadOnlyOptimal);
+		std::vector<vk::AttachmentDescription> attachmentDescriptions{};
+		for (std::uint32_t i = 0; i < 4; ++i) {
+			colorAttachmentDescription.setFormat(GBuffer::format(i));
+			attachmentDescriptions.push_back(colorAttachmentDescription);
+		}
+		vk::AttachmentDescription depthAttachmentDescription = vk::AttachmentDescription()
+			.setFlags(vk::AttachmentDescriptionFlags(0U))
+			.setFormat(GBuffer::depthFormat())
+			.setSamples(vk::SampleCountFlagBits::e1)
+			.setLoadOp(vk::AttachmentLoadOp::eClear)
+			.setStoreOp(vk::AttachmentStoreOp::eStore)
+			.setStencilLoadOp(vk::AttachmentLoadOp::eDontCare)
+			.setStencilStoreOp(vk::AttachmentStoreOp::eDontCare)
+			.setInitialLayout(vk::ImageLayout::eUndefined)
+			.setFinalLayout(vk::ImageLayout::eDepthStencilAttachmentOptimal);
+		attachmentDescriptions.push_back(depthAttachmentDescription);
+
+		// Subpass
+		std::vector<vk::AttachmentReference> subpassColorAttachmentRefs{
+			vk::AttachmentReference(0, vk::ImageLayout::eColorAttachmentOptimal),
+			vk::AttachmentReference(1, vk::ImageLayout::eColorAttachmentOptimal),
+			vk::AttachmentReference(2, vk::ImageLayout::eColorAttachmentOptimal),
+			vk::AttachmentReference(3, vk::ImageLayout::eColorAttachmentOptimal),
+		};
+		vk::AttachmentReference subpassDepthAttachmentRef(4, vk::ImageLayout::eDepthStencilAttachmentOptimal);
+		vk::SubpassDescription subpassDescription = vk::SubpassDescription()
+			.setFlags(vk::SubpassDescriptionFlags(0U))
+			.setPipelineBindPoint(vk::PipelineBindPoint::eGraphics)
+			.setInputAttachments(nullptr)
+			.setColorAttachments(subpassColorAttachmentRefs)
+			//.setResolveAttachments(nullptr)
+			.setPDepthStencilAttachment(&subpassDepthAttachmentRef)
+			.setPreserveAttachments(nullptr);
+
+		// Subpass dependencies
+		std::vector<vk::SubpassDependency> subpassDependencies = {
+			vk::SubpassDependency()
+			.setSrcSubpass(VK_SUBPASS_EXTERNAL)
+			.setDstSubpass(0)
+			.setSrcStageMask(vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests)
+			.setDstStageMask(vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests)
+			.setSrcAccessMask(vk::AccessFlagBits::eDepthStencilAttachmentWrite)
+			.setDstAccessMask(vk::AccessFlagBits::eDepthStencilAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentRead)
+			.setDependencyFlags(vk::DependencyFlags(0U)),
+			vk::SubpassDependency()
+			.setSrcSubpass(VK_SUBPASS_EXTERNAL)
+			.setDstSubpass(0)
+			.setSrcStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
+			.setDstStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
+			.setSrcAccessMask(vk::AccessFlags(0U))
+			.setDstAccessMask(vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eColorAttachmentRead)
+			.setDependencyFlags(vk::DependencyFlags(0U))
+		};
+
+		// Create renderpass
+		vk::RenderPassCreateInfo renderPassCreateInfo = vk::RenderPassCreateInfo()
+			.setFlags(vk::RenderPassCreateFlags(0U))
+			.setAttachments(attachmentDescriptions)
+			.setSubpasses(subpassDescription)
+			.setDependencies(subpassDependencies);
+		this->deferredRenderPass = vk::raii::RenderPass(this->context.device(), renderPassCreateInfo);
+	}
+
+	// Create G buffer
+	if (!this->offscreen){
+		int width, height;
+		glfwGetFramebufferSize(this->window, &width, &height);
+		this->gBuffer = GBuffer(this->context, this->allocator);
+		this->gBuffer.createTextures(
+			vk::Extent2D(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)),
+			this->deferredRenderPass
+		);
+	}
+	else {
+		this->gBuffer = GBuffer(this->context, this->allocator);
+		this->gBuffer.createTextures(
+			vk::Extent2D(static_cast<std::uint32_t>(winWidth), static_cast<std::uint32_t>(winHeight)),
+			this->deferredRenderPass
+		);
+	}
+
+	// Create ssao and ssao blur renderpass
+	{
+		
+		std::vector<vk::AttachmentDescription> attachmentDescriptions{
+			vk::AttachmentDescription()
+			.setFlags(vk::AttachmentDescriptionFlags(0U))
+			.setFormat(SSAO::format(0))
+			.setSamples(vk::SampleCountFlagBits::e1)
+			.setLoadOp(vk::AttachmentLoadOp::eClear)
+			.setStoreOp(vk::AttachmentStoreOp::eStore)
+			.setStencilLoadOp(vk::AttachmentLoadOp::eDontCare)
+			.setStencilStoreOp(vk::AttachmentStoreOp::eDontCare)
+			.setInitialLayout(vk::ImageLayout::eUndefined)
+			.setFinalLayout(vk::ImageLayout::eShaderReadOnlyOptimal)
+		};
+		// No depth attachment
+
+		// Subpass
+		std::vector<vk::AttachmentReference> subpassColorAttachmentRefs{
+			vk::AttachmentReference(0, vk::ImageLayout::eColorAttachmentOptimal),
+		};
+		vk::SubpassDescription subpassDescription = vk::SubpassDescription()
+			.setFlags(vk::SubpassDescriptionFlags(0U))
+			.setPipelineBindPoint(vk::PipelineBindPoint::eGraphics)
+			.setInputAttachments(nullptr)
+			.setColorAttachments(subpassColorAttachmentRefs)
+			//.setResolveAttachments(nullptr)
+			.setPDepthStencilAttachment(nullptr)
+			.setPreserveAttachments(nullptr);
+
+		// Subpass dependencies
+		std::vector<vk::SubpassDependency> subpassDependencies = {
+			vk::SubpassDependency()
+			.setSrcSubpass(VK_SUBPASS_EXTERNAL)
+			.setDstSubpass(0)
+			.setSrcStageMask(vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests)
+			.setDstStageMask(vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests)
+			.setSrcAccessMask(vk::AccessFlagBits::eDepthStencilAttachmentWrite)
+			.setDstAccessMask(vk::AccessFlagBits::eDepthStencilAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentRead)
+			.setDependencyFlags(vk::DependencyFlags(0U)),
+			vk::SubpassDependency()
+			.setSrcSubpass(VK_SUBPASS_EXTERNAL)
+			.setDstSubpass(0)
+			.setSrcStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
+			.setDstStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
+			.setSrcAccessMask(vk::AccessFlags(0U))
+			.setDstAccessMask(vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eColorAttachmentRead)
+			.setDependencyFlags(vk::DependencyFlags(0U))
+		};
+
+		// Create renderpass
+		vk::RenderPassCreateInfo renderPassCreateInfo = vk::RenderPassCreateInfo()
+			.setFlags(vk::RenderPassCreateFlags(0U))
+			.setAttachments(attachmentDescriptions)
+			.setSubpasses(subpassDescription)
+			.setDependencies(subpassDependencies);
+		this->ssaoRenderPass = vk::raii::RenderPass(this->context.device(), renderPassCreateInfo);
+	}
+
+	// Create SSAO buffer
+	if (!this->offscreen) {
+		int width, height;
+		glfwGetFramebufferSize(this->window, &width, &height);
+		this->ssao = SSAO(this->context, this->allocator);
+		this->ssao.createTextures(
+			vk::Extent2D(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)),
+			this->ssaoRenderPass,
+			this->ssaoRenderPass
+		);
+	}
+	else {
+		this->ssao = SSAO(this->context, this->allocator);
+		this->ssao.createTextures(
+			vk::Extent2D(static_cast<std::uint32_t>(winWidth), static_cast<std::uint32_t>(winHeight)),
+			this->ssaoRenderPass,
+			this->ssaoRenderPass
+		);
+	}
+
+	// Create output renderpass
 	{
 		VkAttachmentDescription colorAttachment{
 			.flags = 0,
@@ -276,7 +474,7 @@ Engine::Engine(
 			.pDependencies = dependencies.data()
 		};
 
-		JJYOU_VK_UTILS_CHECK(vkCreateRenderPass(*this->context.device(), &renderPassInfo, nullptr, &this->renderPass));
+		JJYOU_VK_UTILS_CHECK(vkCreateRenderPass(*this->context.device(), &renderPassInfo, nullptr, &this->outputRenderPass));
 	}
 
 	// Create framebuffer
@@ -326,7 +524,14 @@ Engine::Engine(
 			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 			.pImmutableSamplers = nullptr
 		};
-		std::vector<VkDescriptorSetLayoutBinding> bindings = { viewLevelUniformLayoutBinding, lightsStorageBufferUniformBinding, shadowMapSamplerUniformBinding, spotShadowMapsUniformBinding, sphereShadowMapsUniformBinding, sunShadowMapsUniformBinding };
+		std::vector<VkDescriptorSetLayoutBinding> bindings = {
+			viewLevelUniformLayoutBinding,
+			lightsStorageBufferUniformBinding,
+			shadowMapSamplerUniformBinding,
+			spotShadowMapsUniformBinding,
+			sphereShadowMapsUniformBinding,
+			sunShadowMapsUniformBinding
+		};
 		VkDescriptorSetLayoutCreateInfo layoutInfo{
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 			.pNext = nullptr,
@@ -335,6 +540,114 @@ Engine::Engine(
 			.pBindings = bindings.data()
 		};
 		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(*this->context.device(), &layoutInfo, nullptr, &this->viewLevelUniformDescriptorSetLayout));
+	}
+	{
+		VkDescriptorSetLayoutBinding viewLevelUniformLayoutBinding{
+			.binding = 0,
+			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding lightsStorageBufferUniformBinding{
+			.binding = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding shadowMapSamplerUniformBinding{
+			.binding = 2,
+			.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding spotShadowMapsUniformBinding{
+			.binding = 3,
+			.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+			.descriptorCount = Engine::MAX_NUM_SPOT_LIGHTS,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding sphereShadowMapsUniformBinding{
+			.binding = 4,
+			.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+			.descriptorCount = Engine::MAX_NUM_SPHERE_LIGHTS,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding sunShadowMapsUniformBinding{
+			.binding = 5,
+			.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+			.descriptorCount = Engine::MAX_NUM_SUN_LIGHTS,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding gBufferPositionDepthUniformBinding{
+			.binding = 6,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding gBufferNormalUniformBinding{
+			.binding = 7,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding gBufferAlbedoUniformBinding{
+			.binding = 8,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding gBufferPbrUniformBinding{
+			.binding = 9,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding ssaoUniformBinding{
+			.binding = 10,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding ssaoBlurUniformBinding{
+			.binding = 11,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		std::vector<VkDescriptorSetLayoutBinding> bindings = {
+			viewLevelUniformLayoutBinding,
+			lightsStorageBufferUniformBinding,
+			shadowMapSamplerUniformBinding,
+			spotShadowMapsUniformBinding,
+			sphereShadowMapsUniformBinding,
+			sunShadowMapsUniformBinding,
+			gBufferPositionDepthUniformBinding,
+			gBufferNormalUniformBinding,
+			gBufferAlbedoUniformBinding,
+			gBufferPbrUniformBinding,
+			ssaoUniformBinding,
+			ssaoBlurUniformBinding
+		};
+		VkDescriptorSetLayoutCreateInfo layoutInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.pNext = nullptr,
+			.flags = 0,
+			.bindingCount = static_cast<uint32_t>(bindings.size()),
+			.pBindings = bindings.data()
+		};
+		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(*this->context.device(), &layoutInfo, nullptr, &this->viewLevelUniformWithSSAODescriptorSetLayout));
 	}
 	{
 		VkDescriptorSetLayoutBinding objectLevelUniformLayoutBinding{
@@ -521,6 +834,87 @@ Engine::Engine(
 		};
 		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(*this->context.device(), &layoutInfo, nullptr, &this->pbrMaterialLevelUniformDescriptorSetLayout));
 	}
+	{
+		VkDescriptorSetLayoutBinding ssaoSampleUniformBufferBinding{
+			.binding = 0,
+			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding ssaoNoiseSamplerUniformBinding{
+			.binding = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding gBufferPositionDepthUniformBinding{
+			.binding = 2,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding gBufferNormalUniformBinding{
+			.binding = 3,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding gBufferAlbedoUniformBinding{
+			.binding = 4,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		VkDescriptorSetLayoutBinding gBufferPbrUniformBinding{
+			.binding = 5,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		std::vector<VkDescriptorSetLayoutBinding> bindings = {
+			ssaoSampleUniformBufferBinding,
+			ssaoNoiseSamplerUniformBinding,
+			gBufferPositionDepthUniformBinding,
+			gBufferNormalUniformBinding,
+			gBufferAlbedoUniformBinding,
+			gBufferPbrUniformBinding
+		};
+		VkDescriptorSetLayoutCreateInfo layoutInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.pNext = nullptr,
+			.flags = 0,
+			.bindingCount = static_cast<uint32_t>(bindings.size()),
+			.pBindings = bindings.data()
+		};
+		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(*this->context.device(), &layoutInfo, nullptr, &this->ssaoDescriptorSetLayout));
+	}
+
+	{
+		VkDescriptorSetLayoutBinding ssaoUniformBufferBinding{
+			.binding = 0,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.pImmutableSamplers = nullptr
+		};
+		std::vector<VkDescriptorSetLayoutBinding> bindings = {
+			ssaoUniformBufferBinding
+		};
+		VkDescriptorSetLayoutCreateInfo layoutInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.pNext = nullptr,
+			.flags = 0,
+			.bindingCount = static_cast<uint32_t>(bindings.size()),
+			.pBindings = bindings.data()
+		};
+		JJYOU_VK_UTILS_CHECK(vkCreateDescriptorSetLayout(*this->context.device(), &layoutInfo, nullptr, &this->ssaoBlurDescriptorSetLayout));
+	}
 
 	// Create sync objects
 	{
@@ -557,31 +951,43 @@ Engine::Engine(
 		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout };
 		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
 		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
-		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->simplePipelineLayout));
+		pipelineLayoutInfo.pushConstantRangeCount = 0;
+		pipelineLayoutInfo.pPushConstantRanges = nullptr;
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->simpleForwardPipelineLayout));
 
 		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout, this->mirrorMaterialLevelUniformDescriptorSetLayout, this->skyboxUniformDescriptorSetLayout };
 		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
 		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
-		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->mirrorPipelineLayout));
+		pipelineLayoutInfo.pushConstantRangeCount = 0;
+		pipelineLayoutInfo.pPushConstantRanges = nullptr;
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->mirrorForwardPipelineLayout));
 
 		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout, this->environmentMaterialLevelUniformDescriptorSetLayout, this->skyboxUniformDescriptorSetLayout };
 		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
 		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
-		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->environmentPipelineLayout));
+		pipelineLayoutInfo.pushConstantRangeCount = 0;
+		pipelineLayoutInfo.pPushConstantRanges = nullptr;
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->environmentForwardPipelineLayout));
 
 		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout, this->lambertianMaterialLevelUniformDescriptorSetLayout, this->skyboxUniformDescriptorSetLayout };
 		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
 		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
-		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->lambertianPipelineLayout));
+		pipelineLayoutInfo.pushConstantRangeCount = 0;
+		pipelineLayoutInfo.pPushConstantRanges = nullptr;
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->lambertianForwardPipelineLayout));
 
-		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout, this->pbrMaterialLevelUniformDescriptorSetLayout, this->skyboxUniformDescriptorSetLayout };
+		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->objectLevelUniformDescriptorSetLayout, this->pbrMaterialLevelUniformDescriptorSetLayout };
 		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
 		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
-		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->pbrPipelineLayout));
+		pipelineLayoutInfo.pushConstantRangeCount = 0;
+		pipelineLayoutInfo.pPushConstantRanges = nullptr;
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->pbrDeferredPipelineLayout));
 
 		setLayouts = { this->viewLevelUniformDescriptorSetLayout, this->skyboxUniformDescriptorSetLayout };
 		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
 		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
+		pipelineLayoutInfo.pushConstantRangeCount = 0;
+		pipelineLayoutInfo.pPushConstantRanges = nullptr;
 		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->skyboxPipelineLayout));
 
 		setLayouts = { this->objectLevelUniformDescriptorSetLayout };
@@ -619,35 +1025,119 @@ Engine::Engine(
 		};
 		pipelineLayoutInfo.pPushConstantRanges = &sunLightShadowMapPushConstantRange;
 		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->sunlightPipelineLayout));
+
+		setLayouts = { this->ssaoDescriptorSetLayout };
+		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
+		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
+		pipelineLayoutInfo.pushConstantRangeCount = 1;
+		VkPushConstantRange ssaoPushConstantRange{
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.offset = 0U,
+			.size = sizeof(jjyou::glsl::mat4) + sizeof(int) + sizeof(float)
+		};
+		pipelineLayoutInfo.pPushConstantRanges = &ssaoPushConstantRange;
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->ssaoPipelineLayout));
+
+		setLayouts = { this->ssaoBlurDescriptorSetLayout };
+		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
+		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
+		pipelineLayoutInfo.pushConstantRangeCount = 1;
+		VkPushConstantRange ssaoBlurPushConstantRange{
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.offset = 0U,
+			.size = sizeof(int)
+		};
+		pipelineLayoutInfo.pPushConstantRanges = &ssaoBlurPushConstantRange;
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->ssaoBlurPipelineLayout));
+
+		setLayouts = { this->viewLevelUniformWithSSAODescriptorSetLayout, this->skyboxUniformDescriptorSetLayout };
+		pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(setLayouts.size());
+		pipelineLayoutInfo.pSetLayouts = setLayouts.data();
+		pipelineLayoutInfo.pushConstantRangeCount = 1;
+		VkPushConstantRange deferredShadingCompositionPushConstantRange{
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.offset = 0U,
+			.size = 2 * sizeof(int)
+		};
+		pipelineLayoutInfo.pPushConstantRanges = &deferredShadingCompositionPushConstantRange;
+		JJYOU_VK_UTILS_CHECK(vkCreatePipelineLayout(*this->context.device(), &pipelineLayoutInfo, nullptr, &this->deferredShadingCompositionPipelineLayout));
+	}
+
+	// Init ImGui
+	if (!this->offscreen) {
+		IMGUI_CHECKVERSION();
+		ImGui::CreateContext();
+
+		ImGuiIO& io = ImGui::GetIO();
+		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+		io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+
+		// Setup Dear ImGui style
+		ImGui::StyleColorsDark();
+		//ImGui::StyleColorsLight();
+
+		// Load font
+		io.Fonts->AddFontDefault();
+
+		// Setup Platform/Renderer backends
+		ImGui_ImplGlfw_InitForVulkan(this->window, true);
+		ImGui_ImplVulkan_InitInfo initInfo = {
+			.Instance = *this->context.instance(),
+			.PhysicalDevice = *this->context.physicalDevice(),
+			.Device = *this->context.device(),
+			.QueueFamily = *this->context.queueFamilyIndex(jjyou::vk::Context::QueueType::Main),
+			.Queue = **this->context.queue(jjyou::vk::Context::QueueType::Main),
+			.DescriptorPool = *this->descriptorPool,
+			.RenderPass = this->outputRenderPass,
+			.MinImageCount = this->swapchain.numImages(),
+			.ImageCount = this->swapchain.numImages(),
+			.MSAASamples = VK_SAMPLE_COUNT_1_BIT,
+			.PipelineCache = nullptr,
+			.Subpass = 0,
+			.UseDynamicRendering = false,
+			// .PipelineRenderingCreateInfo = {},
+			.Allocator = nullptr,
+			.CheckVkResultFn = [](VkResult result) { if (result != VK_SUCCESS) throw std::runtime_error("[ImGui] Internal error."); },
+			.MinAllocationSize = 0
+		};
+		ImGui_ImplVulkan_Init(&initInfo);
 	}
 
 	// Create graphics pipeline
 	{
-		VkShaderModule simpleVertShaderModule = this->createShaderModule("../spv/renderer/shader/simple.vert.spv");
-		VkShaderModule simpleFragShaderModule = this->createShaderModule("../spv/renderer/shader/simple.frag.spv");
-		VkShaderModule mirrorVertShaderModule = this->createShaderModule("../spv/renderer/shader/mirror.vert.spv");
-		VkShaderModule mirrorFragShaderModule = this->createShaderModule("../spv/renderer/shader/mirror.frag.spv");
-		VkShaderModule environmentVertShaderModule = this->createShaderModule("../spv/renderer/shader/environment.vert.spv");
-		VkShaderModule environmentFragShaderModule = this->createShaderModule("../spv/renderer/shader/environment.frag.spv");
-		VkShaderModule lambertianVertShaderModule = this->createShaderModule("../spv/renderer/shader/lambertian.vert.spv");
-		VkShaderModule lambertianFragShaderModule = this->createShaderModule("../spv/renderer/shader/lambertian.frag.spv");
-		VkShaderModule pbrVertShaderModule = this->createShaderModule("../spv/renderer/shader/pbr.vert.spv");
-		VkShaderModule pbrFragShaderModule = this->createShaderModule("../spv/renderer/shader/pbr.frag.spv");
-		VkShaderModule skyboxVertShaderModule = this->createShaderModule("../spv/renderer/shader/skybox.vert.spv");
-		VkShaderModule skyboxFragShaderModule = this->createShaderModule("../spv/renderer/shader/skybox.frag.spv");
-		VkShaderModule spotlightVertShaderModule = this->createShaderModule("../spv/renderer/shader/spotlight.vert.spv");
-		VkShaderModule spherelightVertShaderModule = this->createShaderModule("../spv/renderer/shader/spherelight.vert.spv");
-		VkShaderModule spherelightGeomShaderModule = this->createShaderModule("../spv/renderer/shader/spherelight.geom.spv");
-		VkShaderModule spherelightFragShaderModule = this->createShaderModule("../spv/renderer/shader/spherelight.frag.spv");
-		VkShaderModule sunlightVertShaderModule = this->createShaderModule("../spv/renderer/shader/sunlight.vert.spv");
-		VkShaderModule sunlightGeomShaderModule = this->createShaderModule("../spv/renderer/shader/sunlight.geom.spv");
+		vk::raii::ShaderModule simpleForwardVertShaderModule = this->createShaderModule("../spv/renderer/shader/simpleForward.vert.spv");
+		vk::raii::ShaderModule simpleForwardFragShaderModule = this->createShaderModule("../spv/renderer/shader/simpleForward.frag.spv");
+		
+		vk::raii::ShaderModule materialForwardVertShaderModule = this->createShaderModule("../spv/renderer/shader/materialForward.vert.spv");
+		vk::raii::ShaderModule mirrorForwardFragShaderModule = this->createShaderModule("../spv/renderer/shader/mirrorForward.frag.spv");
+		vk::raii::ShaderModule environmentForwardFragShaderModule = this->createShaderModule("../spv/renderer/shader/environmentForward.frag.spv");
+		vk::raii::ShaderModule lambertianForwardFragShaderModule = this->createShaderModule("../spv/renderer/shader/lambertianForward.frag.spv");
+		
+		vk::raii::ShaderModule pbrDeferredVertShaderModule = this->createShaderModule("../spv/renderer/shader/pbrDeferred.vert.spv");
+		vk::raii::ShaderModule pbrDeferredFragShaderModule = this->createShaderModule("../spv/renderer/shader/pbrDeferred.frag.spv");
+
+		vk::raii::ShaderModule skyboxVertShaderModule = this->createShaderModule("../spv/renderer/shader/skybox.vert.spv");
+		vk::raii::ShaderModule skyboxFragShaderModule = this->createShaderModule("../spv/renderer/shader/skybox.frag.spv");
+		
+		vk::raii::ShaderModule spotlightVertShaderModule = this->createShaderModule("../spv/renderer/shader/spotlight.vert.spv");
+		vk::raii::ShaderModule spherelightVertShaderModule = this->createShaderModule("../spv/renderer/shader/spherelight.vert.spv");
+		vk::raii::ShaderModule spherelightGeomShaderModule = this->createShaderModule("../spv/renderer/shader/spherelight.geom.spv");
+		vk::raii::ShaderModule spherelightFragShaderModule = this->createShaderModule("../spv/renderer/shader/spherelight.frag.spv");
+		vk::raii::ShaderModule sunlightVertShaderModule = this->createShaderModule("../spv/renderer/shader/sunlight.vert.spv");
+		vk::raii::ShaderModule sunlightGeomShaderModule = this->createShaderModule("../spv/renderer/shader/sunlight.geom.spv");
+
+		vk::raii::ShaderModule fullscreenVertShaderModule = this->createShaderModule("../spv/renderer/shader/fullscreen.vert.spv");
+		vk::raii::ShaderModule deferredShadingSSAOFragShaderModule = this->createShaderModule("../spv/renderer/shader/ssao.frag.spv");
+		vk::raii::ShaderModule deferredShadingSSAOBlurFragShaderModule = this->createShaderModule("../spv/renderer/shader/ssaoBlur.frag.spv");
+		vk::raii::ShaderModule deferredShadingCompositionFragShaderModule = this->createShaderModule("../spv/renderer/shader/deferredShadingComposition.frag.spv");
+
 
 		std::array<VkPipelineShaderStageCreateInfo, 3> shaderStages = { {
 			VkPipelineShaderStageCreateInfo{
 				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 				.pNext = nullptr,
 				.flags = 0,
-				.stage = VK_SHADER_STAGE_VERTEX_BIT,
+				.stage = VK_SHADER_STAGE_VERTEX_BIT, // To set
 				.module = nullptr, // To set
 				.pName = "main",
 				.pSpecializationInfo = nullptr
@@ -656,7 +1146,7 @@ Engine::Engine(
 				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 				.pNext = nullptr,
 				.flags = 0,
-				.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+				.stage = VK_SHADER_STAGE_FRAGMENT_BIT, // To set
 				.module = nullptr, // To set
 				.pName = "main",
 				.pSpecializationInfo = nullptr
@@ -665,7 +1155,7 @@ Engine::Engine(
 				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 				.pNext = nullptr,
 				.flags = 0,
-				.stage = VK_SHADER_STAGE_GEOMETRY_BIT,
+				.stage = VK_SHADER_STAGE_GEOMETRY_BIT,  // To set
 				.module = nullptr, // To set
 				.pName = "main",
 				.pSpecializationInfo = nullptr
@@ -830,6 +1320,8 @@ Engine::Engine(
 			.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
 		};
 
+		std::vector<VkPipelineColorBlendAttachmentState> gBufferColorBlendAttachments(4, colorBlendAttachment);
+
 		VkPipelineColorBlendStateCreateInfo colorBlending{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
 			.pNext = nullptr,
@@ -869,7 +1361,7 @@ Engine::Engine(
 			.pColorBlendState = &colorBlending,
 			.pDynamicState = &dynamicState,
 			.layout = nullptr, // To set
-			.renderPass = this->renderPass,
+			.renderPass = this->outputRenderPass, // to set
 			.subpass = 0,
 			.basePipelineHandle = nullptr,
 			.basePipelineIndex = -1
@@ -878,65 +1370,113 @@ Engine::Engine(
 		// Rendering pipeline
 		rasterizer.cullMode = (enableValidation) ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
 
-		shaderStages[0].module = simpleVertShaderModule;
-		shaderStages[1].module = simpleFragShaderModule;
+		shaderStages[0].module = *simpleForwardVertShaderModule;
+		shaderStages[1].module = *simpleForwardFragShaderModule;
 		vertexInputInfo.vertexBindingDescriptionCount = 1;
 		vertexInputInfo.pVertexBindingDescriptions = &simpleVertexBindingDescription;
 		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(simpleAttributeDescriptions.size());
 		vertexInputInfo.pVertexAttributeDescriptions = simpleAttributeDescriptions.data();
-		pipelineInfo.layout = this->simplePipelineLayout;
-		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->simplePipeline));
+		pipelineInfo.layout = this->simpleForwardPipelineLayout;
+		pipelineInfo.renderPass = this->outputRenderPass;
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->simpleForwardPipeline));
 
-		shaderStages[0].module = mirrorVertShaderModule;
-		shaderStages[1].module = mirrorFragShaderModule;
+		shaderStages[0].module = *materialForwardVertShaderModule;
+		shaderStages[1].module = *mirrorForwardFragShaderModule;
 		vertexInputInfo.vertexBindingDescriptionCount = 1;
 		vertexInputInfo.pVertexBindingDescriptions = &materialVertexBindingDescription;
 		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(materialAttributeDescriptions.size());
 		vertexInputInfo.pVertexAttributeDescriptions = materialAttributeDescriptions.data();
-		pipelineInfo.layout = this->mirrorPipelineLayout;
-		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->mirrorPipeline));
+		pipelineInfo.layout = this->mirrorForwardPipelineLayout;
+		pipelineInfo.renderPass = this->outputRenderPass;
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->mirrorForwardPipeline));
 
-		shaderStages[0].module = environmentVertShaderModule;
-		shaderStages[1].module = environmentFragShaderModule;
+		shaderStages[0].module = *materialForwardVertShaderModule;
+		shaderStages[1].module = *environmentForwardFragShaderModule;
 		vertexInputInfo.vertexBindingDescriptionCount = 1;
 		vertexInputInfo.pVertexBindingDescriptions = &materialVertexBindingDescription;
 		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(materialAttributeDescriptions.size());
 		vertexInputInfo.pVertexAttributeDescriptions = materialAttributeDescriptions.data();
-		pipelineInfo.layout = this->environmentPipelineLayout;
-		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->environmentPipeline));
+		pipelineInfo.layout = this->environmentForwardPipelineLayout;
+		pipelineInfo.renderPass = this->outputRenderPass;
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->environmentForwardPipeline));
 
-		shaderStages[0].module = lambertianVertShaderModule;
-		shaderStages[1].module = lambertianFragShaderModule;
+		shaderStages[0].module = *materialForwardVertShaderModule;
+		shaderStages[1].module = *lambertianForwardFragShaderModule;
 		vertexInputInfo.vertexBindingDescriptionCount = 1;
 		vertexInputInfo.pVertexBindingDescriptions = &materialVertexBindingDescription;
 		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(materialAttributeDescriptions.size());
 		vertexInputInfo.pVertexAttributeDescriptions = materialAttributeDescriptions.data();
-		pipelineInfo.layout = this->lambertianPipelineLayout;
-		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->lambertianPipeline));
+		pipelineInfo.layout = this->lambertianForwardPipelineLayout;
+		pipelineInfo.renderPass = this->outputRenderPass;
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->lambertianForwardPipeline));
 
-		shaderStages[0].module = pbrVertShaderModule;
-		shaderStages[1].module = pbrFragShaderModule;
+		colorBlending.attachmentCount = 4;
+		colorBlending.pAttachments = gBufferColorBlendAttachments.data();
+		shaderStages[0].module = *pbrDeferredVertShaderModule;
+		shaderStages[1].module = *pbrDeferredFragShaderModule;
 		vertexInputInfo.vertexBindingDescriptionCount = 1;
 		vertexInputInfo.pVertexBindingDescriptions = &materialVertexBindingDescription;
 		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(materialAttributeDescriptions.size());
 		vertexInputInfo.pVertexAttributeDescriptions = materialAttributeDescriptions.data();
-		pipelineInfo.layout = this->pbrPipelineLayout;
-		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->pbrPipeline));
+		pipelineInfo.layout = this->pbrDeferredPipelineLayout;
+		pipelineInfo.renderPass = *this->deferredRenderPass;
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->pbrDeferredPipeline));
+		colorBlending.attachmentCount = 1;
+		colorBlending.pAttachments = &colorBlendAttachment;
 
-		shaderStages[0].module = skyboxVertShaderModule;
-		shaderStages[1].module = skyboxFragShaderModule;
+		depthStencil.depthTestEnable = VK_FALSE;
+		depthStencil.depthWriteEnable = VK_FALSE;
+		shaderStages[0].module = *fullscreenVertShaderModule;
+		shaderStages[1].module = *deferredShadingSSAOFragShaderModule;
+		vertexInputInfo.vertexBindingDescriptionCount = 0;
+		vertexInputInfo.pVertexBindingDescriptions = nullptr;
+		vertexInputInfo.vertexAttributeDescriptionCount = 0;
+		vertexInputInfo.pVertexAttributeDescriptions = nullptr;
+		pipelineInfo.layout = this->ssaoPipelineLayout;
+		pipelineInfo.renderPass = *this->ssaoRenderPass;
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->ssaoPipeline));
+		depthStencil.depthTestEnable = VK_TRUE;
+		depthStencil.depthWriteEnable = VK_TRUE;
+
+		depthStencil.depthTestEnable = VK_FALSE;
+		depthStencil.depthWriteEnable = VK_FALSE;
+		shaderStages[0].module = *fullscreenVertShaderModule;
+		shaderStages[1].module = *deferredShadingSSAOBlurFragShaderModule;
+		vertexInputInfo.vertexBindingDescriptionCount = 0;
+		vertexInputInfo.pVertexBindingDescriptions = nullptr;
+		vertexInputInfo.vertexAttributeDescriptionCount = 0;
+		vertexInputInfo.pVertexAttributeDescriptions = nullptr;
+		pipelineInfo.layout = this->ssaoBlurPipelineLayout;
+		pipelineInfo.renderPass = *this->ssaoRenderPass;
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->ssaoBlurPipeline));
+		depthStencil.depthTestEnable = VK_TRUE;
+		depthStencil.depthWriteEnable = VK_TRUE;
+
+		shaderStages[0].module = *fullscreenVertShaderModule;
+		shaderStages[1].module = *deferredShadingCompositionFragShaderModule;
+		vertexInputInfo.vertexBindingDescriptionCount = 0;
+		vertexInputInfo.pVertexBindingDescriptions = nullptr;
+		vertexInputInfo.vertexAttributeDescriptionCount = 0;
+		vertexInputInfo.pVertexAttributeDescriptions = nullptr;
+		pipelineInfo.layout = this->deferredShadingCompositionPipelineLayout;
+		pipelineInfo.renderPass = this->outputRenderPass;
+		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->deferredShadingCompositionPipeline));
+
+		shaderStages[0].module = *skyboxVertShaderModule;
+		shaderStages[1].module = *skyboxFragShaderModule;
 		vertexInputInfo.vertexBindingDescriptionCount = 0;
 		vertexInputInfo.pVertexBindingDescriptions = nullptr;
 		vertexInputInfo.vertexAttributeDescriptionCount = 0;
 		vertexInputInfo.pVertexAttributeDescriptions = nullptr;
 		pipelineInfo.layout = this->skyboxPipelineLayout;
+		pipelineInfo.renderPass = this->outputRenderPass;
 		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->skyboxPipeline));
 
 		// Shadow mapping pipeline
 		pipelineInfo.renderPass = *this->shadowMappingRenderPass;
 		rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT; // Front face culling for shadow map
 
-		shaderStages[0].module = spotlightVertShaderModule;
+		shaderStages[0].module = *spotlightVertShaderModule;
 		pipelineInfo.stageCount = 1;
 		vertexInputInfo.vertexBindingDescriptionCount = 1;
 		vertexInputInfo.pVertexBindingDescriptions = &materialVertexBindingDescription;
@@ -945,9 +1485,9 @@ Engine::Engine(
 		pipelineInfo.layout = this->spotlightPipelineLayout;
 		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->spotlightPipeline));
 
-		shaderStages[0].module = spherelightVertShaderModule;
-		shaderStages[1].module = spherelightFragShaderModule;
-		shaderStages[2].module = spherelightGeomShaderModule;
+		shaderStages[0].module = *spherelightVertShaderModule;
+		shaderStages[1].module = *spherelightFragShaderModule;
+		shaderStages[2].module = *spherelightGeomShaderModule;
 		pipelineInfo.stageCount = 3;
 		vertexInputInfo.vertexBindingDescriptionCount = 1;
 		vertexInputInfo.pVertexBindingDescriptions = &materialVertexBindingDescription;
@@ -956,8 +1496,8 @@ Engine::Engine(
 		pipelineInfo.layout = this->spherelightPipelineLayout;
 		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->spherelightPipeline));
 
-		shaderStages[0].module = sunlightVertShaderModule;
-		shaderStages[1].module = sunlightGeomShaderModule;
+		shaderStages[0].module = *sunlightVertShaderModule;
+		shaderStages[1].module = *sunlightGeomShaderModule;
 		shaderStages[1].stage = VK_SHADER_STAGE_GEOMETRY_BIT;
 		pipelineInfo.stageCount = 2;
 		vertexInputInfo.vertexBindingDescriptionCount = 1;
@@ -967,42 +1507,74 @@ Engine::Engine(
 		pipelineInfo.layout = this->sunlightPipelineLayout;
 		JJYOU_VK_UTILS_CHECK(vkCreateGraphicsPipelines(*this->context.device(), nullptr, 1, &pipelineInfo, nullptr, &this->sunlightPipeline));
 
-		vkDestroyShaderModule(*this->context.device(), simpleVertShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), simpleFragShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), mirrorVertShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), mirrorFragShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), environmentVertShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), environmentFragShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), lambertianVertShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), lambertianFragShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), pbrVertShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), pbrFragShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), skyboxVertShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), skyboxFragShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), spotlightVertShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), spherelightVertShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), spherelightGeomShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), spherelightFragShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), sunlightVertShaderModule, nullptr);
-		vkDestroyShaderModule(*this->context.device(), sunlightGeomShaderModule, nullptr);
-		}
+	}
+
+	// Create ssao samples and ssao noise textures
+	// https://learnopengl.com/Advanced-Lighting/SSAO
+	std::uniform_real_distribution<float> randomFloats(0.0f, 1.0f);
+	std::default_random_engine generator;
+	auto lerp = [](float a, float b, float f) {
+		return a + f * (b - a);
+		};
+	for (std::uint32_t i = 0; i < 256; ++i) {
+		jjyou::glsl::vec3 sample(
+			randomFloats(generator) * 2.0f - 1.0f,
+			randomFloats(generator) * 2.0f - 1.0f,
+			randomFloats(generator)
+		);
+		jjyou::glsl::normalize(sample);
+		sample *= randomFloats(generator);
+		float scale = static_cast<float>(i % 64) / 256.0f;
+		scale = lerp(0.1f, 1.0f, scale * scale);
+		sample *= scale;
+		this->ssaoParameters.ssaoSamples[i] = jjyou::glsl::vec4(sample, 1.0f);
+	}
+	std::array<jjyou::glsl::vec4, 16> ssaoNoiseData;
+	for (unsigned int i = 0; i < 16; i++) {
+		jjyou::glsl::vec4 noise(
+			randomFloats(generator) * 2.0f - 1.0f,
+			randomFloats(generator) * 2.0f - 1.0f,
+			0.0f,
+			0.0f
+		);
+		ssaoNoiseData[i] = noise;
+	}
+	this->ssaoNoise.create(
+		this->context,
+		this->allocator,
+		this->graphicsCommandPool,
+		this->transferCommandPool,
+		ssaoNoiseData.data(),
+		VK_FORMAT_R32G32B32A32_SFLOAT,
+		VkExtent2D{ .width = 4,.height = 4 }
+	);
 }
 
 Engine::~Engine(void) {
 
 	vkDeviceWaitIdle(*this->context.device());
 
+	this->pScene72 = nullptr;
+
+	this->ssaoNoise.destroy();
+
 	//Destroy pipeline and pipeline layout
-	vkDestroyPipeline(*this->context.device(), this->simplePipeline, nullptr);
-	vkDestroyPipelineLayout(*this->context.device(), this->simplePipelineLayout, nullptr);
-	vkDestroyPipeline(*this->context.device(), this->mirrorPipeline, nullptr);
-	vkDestroyPipelineLayout(*this->context.device(), this->mirrorPipelineLayout, nullptr);
-	vkDestroyPipeline(*this->context.device(), this->environmentPipeline, nullptr);
-	vkDestroyPipelineLayout(*this->context.device(), this->environmentPipelineLayout, nullptr);
-	vkDestroyPipeline(*this->context.device(), this->lambertianPipeline, nullptr);
-	vkDestroyPipelineLayout(*this->context.device(), this->lambertianPipelineLayout, nullptr);
-	vkDestroyPipeline(*this->context.device(), this->pbrPipeline, nullptr);
-	vkDestroyPipelineLayout(*this->context.device(), this->pbrPipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->simpleForwardPipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->simpleForwardPipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->mirrorForwardPipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->mirrorForwardPipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->environmentForwardPipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->environmentForwardPipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->lambertianForwardPipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->lambertianForwardPipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->pbrDeferredPipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->pbrDeferredPipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->ssaoPipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->ssaoPipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->ssaoBlurPipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->ssaoBlurPipelineLayout, nullptr);
+	vkDestroyPipeline(*this->context.device(), this->deferredShadingCompositionPipeline, nullptr);
+	vkDestroyPipelineLayout(*this->context.device(), this->deferredShadingCompositionPipelineLayout, nullptr);
 	vkDestroyPipeline(*this->context.device(), this->skyboxPipeline, nullptr);
 	vkDestroyPipelineLayout(*this->context.device(), this->skyboxPipelineLayout, nullptr);
 	vkDestroyPipeline(*this->context.device(), this->spotlightPipeline, nullptr);
@@ -1027,6 +1599,9 @@ Engine::~Engine(void) {
 	vkDestroyDescriptorSetLayout(*this->context.device(), this->environmentMaterialLevelUniformDescriptorSetLayout, nullptr);
 	vkDestroyDescriptorSetLayout(*this->context.device(), this->lambertianMaterialLevelUniformDescriptorSetLayout, nullptr);
 	vkDestroyDescriptorSetLayout(*this->context.device(), this->pbrMaterialLevelUniformDescriptorSetLayout, nullptr);
+	vkDestroyDescriptorSetLayout(*this->context.device(), this->viewLevelUniformWithSSAODescriptorSetLayout, nullptr);
+	vkDestroyDescriptorSetLayout(*this->context.device(), this->ssaoDescriptorSetLayout, nullptr);
+	vkDestroyDescriptorSetLayout(*this->context.device(), this->ssaoBlurDescriptorSetLayout, nullptr);
 
 	// Destroy frame buffers
 	for (int i = 0; i < this->framebuffers.size(); ++i) {
@@ -1034,8 +1609,16 @@ Engine::~Engine(void) {
 	}
 
 	// Destroy render pass
-	vkDestroyRenderPass(*this->context.device(), this->renderPass, nullptr);
+	vkDestroyRenderPass(*this->context.device(), this->outputRenderPass, nullptr);
 	this->shadowMappingRenderPass.clear();
+	this->deferredRenderPass.clear();
+	this->ssaoRenderPass.clear();
+
+	// Destroy g buffer
+	this->gBuffer.~GBuffer();
+
+	// Destroy ssao buffer
+	this->ssao.~SSAO();
 
 	// Destroy depth image
 	vkDestroyImageView(*this->context.device(), this->depthImageView, nullptr);
@@ -1048,6 +1631,12 @@ Engine::~Engine(void) {
 	else
 		this->swapchain.~Swapchain();
 
+	// Deinit UI
+	if (!this->offscreen) {
+		ImGui_ImplVulkan_Shutdown();
+		ImGui_ImplGlfw_Shutdown();
+	}
+
 	// Destroy allocator
 	this->allocator.destory();
 
@@ -1056,6 +1645,9 @@ Engine::~Engine(void) {
 	// Destroy command pool
 	vkDestroyCommandPool(*this->context.device(), this->graphicsCommandPool, nullptr);
 	vkDestroyCommandPool(*this->context.device(), this->transferCommandPool, nullptr);
+
+	// Destroy descriptor pool
+	this->descriptorPool.clear();
 
 	// Destroy glfw window
 	if (!this->offscreen) {
@@ -1077,7 +1669,7 @@ void Engine::createSwapchain(void) {
 
 void Engine::createFramebuffers(void) {
 	if (!this->offscreen) {
-		this->framebuffers.resize(this->swapchain.imageCount());
+		this->framebuffers.resize(this->swapchain.numImages());
 		for (size_t i = 0; i < this->framebuffers.size(); i++) {
 			std::array<VkImageView, 2> attachments = {
 				*this->swapchain.imageView(static_cast<std::uint32_t>(i)),
@@ -1088,7 +1680,7 @@ void Engine::createFramebuffers(void) {
 				.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
 				.pNext = nullptr,
 				.flags = 0,
-				.renderPass = this->renderPass,
+				.renderPass = this->outputRenderPass,
 				.attachmentCount = static_cast<uint32_t>(attachments.size()),
 				.pAttachments = attachments.data(),
 				.width = this->swapchain.extent().width,
@@ -1110,7 +1702,7 @@ void Engine::createFramebuffers(void) {
 				.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
 				.pNext = nullptr,
 				.flags = 0,
-				.renderPass = this->renderPass,
+				.renderPass = this->outputRenderPass,
 				.attachmentCount = static_cast<uint32_t>(attachments.size()),
 				.pAttachments = attachments.data(),
 				.width = this->virtualSwapchain.extent().width,

@@ -1,5 +1,6 @@
 #pragma once
 #include <jjyou/vk/Vulkan.hpp>
+#include <jjyou/vk/Legacy/Memory.hpp>
 
 class ShadowMap {
 
@@ -230,6 +231,88 @@ public:
 	  * the returned image view is a 2D array view.
 	  */
 	const vk::raii::ImageView& inputImageView(void) const { return this->_inputImageView; }
+
+	/** @brief	Transfer image layout from VK_IMAGE_LAYOUT_UNDEFINED to VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL.
+	  * @note	This method is only for placeholder shadow maps.
+	  */
+	void transferImageLayout(
+		VkCommandPool commandPool,
+		VkQueue queue,
+		std::uint32_t queueFamilyIndex
+	) const {
+		VkCommandBuffer commandBuffer{};
+		VkFence fence{};
+		{
+			VkCommandBufferAllocateInfo commandBufferAllocInfo{
+				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+				.commandPool = commandPool,
+				.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+				.commandBufferCount = 1,
+			};
+			JJYOU_VK_UTILS_CHECK(vkAllocateCommandBuffers(*this->_pContext->device(), &commandBufferAllocInfo, &commandBuffer));
+			VkCommandBufferBeginInfo beginInfo{
+				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+				.pNext = nullptr,
+				.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+				.pInheritanceInfo = nullptr
+			};
+			JJYOU_VK_UTILS_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
+		}
+		{
+			VkFenceCreateInfo fenceCreateInfo{
+				.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+				.pNext = nullptr,
+				.flags = VkFenceCreateFlags(0)
+			};
+			vkCreateFence(*this->_pContext->device(), &fenceCreateInfo, nullptr, &fence);
+		}
+		{
+			VkImageMemoryBarrier imageMemoryBarrier{
+				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+				.pNext = nullptr,
+				.srcAccessMask = VK_ACCESS_NONE,
+				.dstAccessMask = VK_ACCESS_NONE,
+				.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+				.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+				.srcQueueFamilyIndex = queueFamilyIndex,
+				.dstQueueFamilyIndex = queueFamilyIndex,
+				.image = *this->_image,
+				.subresourceRange{
+					.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+					.baseMipLevel = 0,
+					.levelCount = 1,
+					.baseArrayLayer = 0,
+					.layerCount = this->_numLayers
+				}
+			};
+			vkCmdPipelineBarrier(
+				commandBuffer,
+				VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+				0,
+				0, nullptr,
+				0, nullptr,
+				1, &imageMemoryBarrier
+			);
+		}
+		{
+			JJYOU_VK_UTILS_CHECK(vkEndCommandBuffer(commandBuffer));
+			VkSubmitInfo submitInfo{
+				.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+				.pNext = nullptr,
+				.waitSemaphoreCount = 0U,
+				.pWaitSemaphores = nullptr,
+				.pWaitDstStageMask = 0,
+				.commandBufferCount = 1,
+				.pCommandBuffers = &commandBuffer,
+				.signalSemaphoreCount = 0U,
+				.pSignalSemaphores = nullptr
+			};
+			JJYOU_VK_UTILS_CHECK(vkQueueSubmit(queue, 1, &submitInfo, fence));
+			JJYOU_VK_UTILS_CHECK(vkWaitForFences(*this->_pContext->device(), 1, &fence, VK_TRUE, std::numeric_limits<std::uint64_t>::max()));
+			vkFreeCommandBuffers(*this->_pContext->device(), commandPool, 1, &commandBuffer);
+			vkDestroyFence(*this->_pContext->device(), fence, nullptr);
+		}
+	}
 
 private:
 

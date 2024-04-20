@@ -194,7 +194,7 @@ void Engine::insertImageMemoryBarrier(
 		1, &imageMemoryBarrier);
 }
 
-VkShaderModule Engine::createShaderModule(const std::filesystem::path& path) const {
+vk::raii::ShaderModule Engine::createShaderModule(const std::filesystem::path& path) const {
 	std::vector<char> shaderCode;
 	std::ifstream fin;
 	fin.open(path, std::ios::binary | std::ios::in);
@@ -215,5 +215,5 @@ VkShaderModule Engine::createShaderModule(const std::filesystem::path& path) con
 		.pCode = reinterpret_cast<const uint32_t*>(shaderCode.data())
 	};
 	JJYOU_VK_UTILS_CHECK(vkCreateShaderModule(*this->context.device(), &createInfo, nullptr, &shaderModule));
-	return shaderModule;
+	return vk::raii::ShaderModule(this->context.device(), shaderModule);
 }

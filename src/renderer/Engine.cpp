@@ -2,8 +2,23 @@
 #include <fstream>
 #include <exception>
 #include <stdexcept>
+#include <imgui.h>
+#include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_vulkan.h>
 #include "Scene72.hpp"
 #include "Culling.hpp"
+
+static struct {
+	struct {
+		Engine::DeferredShadingRenderingMode renderingMode = Engine::DeferredShadingRenderingMode::Scene;
+	} deferredShading;
+	struct {
+		bool enable = true;
+		float sampleRadius = 0.5f;
+		int blurRadius = 2;
+		int sampleCount = 1;
+	} ssao;
+} ui;
 
 void Engine::setCameraMode(CameraMode cameraMode, std::optional<std::string> camera) {
 	switch (cameraMode) {
@@ -26,11 +41,6 @@ void Engine::setCameraMode(CameraMode cameraMode, std::optional<std::string> cam
 }
 
 void Engine::drawFrame() {
-	//std::cout << "ZoomRate: " << this->sceneViewer.getZoomRate() << std::endl;
-	//std::cout << "Center: " << this->sceneViewer.getCenter().x << ", " << this->sceneViewer.getCenter().y << ", " << this->sceneViewer.getCenter().z << std::endl;
-	//std::cout << "Pitch: " << this->sceneViewer.getPitch() << std::endl;
-	//std::cout << "Roll: " << this->sceneViewer.getRoll() << std::endl;
-	//std::cout << "Yaw: " << this->sceneViewer.getYaw() << std::endl;
 	// Compute play time
 	float now = this->clock->now();
 	if (!this->paused) {
@@ -57,6 +67,34 @@ void Engine::drawFrame() {
 	}
 	else {
 		JJYOU_VK_UTILS_CHECK(this->virtualSwapchain.acquireNextImage(&imageIndex));
+	}
+
+	// Draw UI
+	if (!this->offscreen) {
+		ImGui_ImplVulkan_NewFrame();
+		ImGui_ImplGlfw_NewFrame();
+		ImGui::NewFrame();
+		if (ImGui::Begin("Renderer")) {
+			if (ImGui::TreeNode("Deferred shading")) {
+				ImGui::RadioButton("scene", reinterpret_cast<int*>(&ui.deferredShading.renderingMode), 0);
+				ImGui::RadioButton("ssao", reinterpret_cast<int*>(&ui.deferredShading.renderingMode), 1);
+				ImGui::RadioButton("ssao blur", reinterpret_cast<int*>(&ui.deferredShading.renderingMode), 2);
+				ImGui::RadioButton("albedo", reinterpret_cast<int*>(&ui.deferredShading.renderingMode), 3);
+				ImGui::RadioButton("normal", reinterpret_cast<int*>(&ui.deferredShading.renderingMode), 4);
+				ImGui::RadioButton("depth", reinterpret_cast<int*>(&ui.deferredShading.renderingMode), 5);
+				ImGui::RadioButton("metalness", reinterpret_cast<int*>(&ui.deferredShading.renderingMode), 6);
+				ImGui::RadioButton("roughness", reinterpret_cast<int*>(&ui.deferredShading.renderingMode), 7);
+				ImGui::TreePop();
+			}
+			if (ImGui::TreeNode("SSAO")) {
+				ImGui::Checkbox("enable", &ui.ssao.enable);
+				ImGui::SliderInt("sample count", &ui.ssao.sampleCount, 1, 4, "64x%d");
+				ImGui::SliderFloat("sample radius", &ui.ssao.sampleRadius, 0.1f, 10.0f);
+				ImGui::SliderInt("blur radius", &ui.ssao.blurRadius, 0, 7);
+				ImGui::TreePop();
+			}
+		}
+		ImGui::End();
 	}
 	
 
@@ -542,7 +580,7 @@ void Engine::drawFrame() {
 		Engine::ViewLevelUniform viewLevelUniform{
 			.projection = viewingProjection,
 			.view = viewingView,
-			.viewPos = -jjyou::glsl::vec4(jjyou::glsl::transpose(jjyou::glsl::mat3(viewingView)) * jjyou::glsl::vec3(viewLevelUniform.view[3]), 1.0f)
+			.viewPos = -jjyou::glsl::vec4(jjyou::glsl::transpose(jjyou::glsl::mat3(viewingView)) * jjyou::glsl::vec3(viewingView[3]), 1.0f)
 		};
 		memcpy(this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformBufferMemory.mappedAddress(), &viewLevelUniform, sizeof(Engine::ViewLevelUniform));
 		if (this->pScene72->environment) {
@@ -550,6 +588,127 @@ void Engine::drawFrame() {
 		}
 		memcpy(this->pScene72->frameDescriptorSets[this->currentFrame].lightsBufferMemory.mappedAddress(), &lights, sizeof(Engine::Lights));
 
+		// Deferred shading for pbr objects
+		// pbr deferred
+		{
+			std::array<VkClearValue, 5> clearValues{ {
+				VkClearValue{
+					.color = { {0.0f, 0.0f, debugFarZ, 1.0f} }
+				},
+				VkClearValue{
+					.color = { {0.0f, 0.0f, 0.0f, 1.0f} }
+				},
+				VkClearValue{
+					.color = { {0.0f, 0.0f, 0.0f, 1.0f} }
+				},
+				VkClearValue{
+					.color = { {0.0f, 0.0f, 0.0f, 1.0f} }
+				},
+				VkClearValue{
+					.depthStencil = { 1.0f, 0 }
+				}
+			} };
+			VkRenderPassBeginInfo renderPassInfo{
+				.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+				.pNext = nullptr,
+				.renderPass = *this->deferredRenderPass,
+				.framebuffer = *this->gBuffer.framebuffer(),
+				.renderArea = {
+					.offset = {0, 0},
+					.extent = screenExtent
+				},
+				.clearValueCount = static_cast<uint32_t>(clearValues.size()),
+				.pClearValues = clearValues.data()
+			};
+			instanceCount = static_cast<std::uint32_t>(simpleInstances.size() + mirrorInstances.size() + environmentInstances.size() + lambertianInstances.size()); // Skip material other than pbr
+			vkCmdBeginRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pbrDeferredPipeline);
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneViewport);
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneScissor);
+			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pbrDeferredPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
+			//vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pbrDeferredPipelineLayout, 3, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].skyboxUniformDescriptorSet, 0, nullptr);
+			for (const auto& instanceToDraw : pbrInstances) {
+				if (this->cullingMode == CullingMode::NONE ||
+					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(debugProjection, debugView, instanceToDraw.transform)
+					) {
+					VkDeviceSize vertexBufferOffsets = 0;
+					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
+					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pbrDeferredPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pbrDeferredPipelineLayout, 2, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].materialLevelUniformDescriptorSets[instanceToDraw.mesh->material.lock()->idx], 0, nullptr);
+					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
+				}
+				instanceCount++;
+			}
+			vkCmdEndRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer);
+		}
+		// SSAO
+		{
+			std::array<VkClearValue, 1> clearValues{ {
+				VkClearValue{
+					.color = { {1.0f, 1.0f, 1.0f, 1.0f} }
+				}
+			} };
+			VkRenderPassBeginInfo renderPassInfo{
+				.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+				.pNext = nullptr,
+				.renderPass = *this->ssaoRenderPass,
+				.framebuffer = *this->ssao.framebuffer(0),
+				.renderArea = {
+					.offset = {0, 0},
+					.extent = screenExtent
+				},
+				.clearValueCount = static_cast<uint32_t>(clearValues.size()),
+				.pClearValues = clearValues.data()
+			};
+			vkCmdBeginRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->ssaoPipeline);
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneViewport);
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneScissor);
+			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->ssaoPipelineLayout, 0, 1, reinterpret_cast<const VkDescriptorSet*>(&*this->pScene72->ssaoDescriptorSet), 0, nullptr);
+			struct {
+				jjyou::glsl::mat4 projection;
+				int numSamples;
+				float radius;
+			} pushConstants{};
+			pushConstants.projection = viewingProjection;
+			pushConstants.numSamples = 64 * ui.ssao.sampleCount;
+			pushConstants.radius = ui.ssao.sampleRadius;
+			vkCmdPushConstants(this->frameData[this->currentFrame].graphicsCommandBuffer, this->ssaoPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants);
+			vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, 6, 1, 0, 0);
+			vkCmdEndRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer);
+		}
+
+		// SSAO blur
+		{
+			std::array<VkClearValue, 1> clearValues{ {
+				VkClearValue{
+					.color = { {0.0f, 0.0f, 0.0f, 1.0f} }
+				}
+			} };
+			VkRenderPassBeginInfo renderPassInfo{
+				.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+				.pNext = nullptr,
+				.renderPass = *this->ssaoRenderPass,
+				.framebuffer = *this->ssao.framebuffer(1),
+				.renderArea = {
+					.offset = {0, 0},
+					.extent = screenExtent
+				},
+				.clearValueCount = static_cast<uint32_t>(clearValues.size()),
+				.pClearValues = clearValues.data()
+			};
+			vkCmdBeginRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->ssaoBlurPipeline);
+			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneViewport);
+			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneScissor);
+			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->ssaoBlurPipelineLayout, 0, 1, reinterpret_cast<const VkDescriptorSet*>(&*this->pScene72->ssaoBlurDescriptorSet), 0, nullptr);
+			vkCmdPushConstants(this->frameData[this->currentFrame].graphicsCommandBuffer, this->ssaoBlurPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(int), &ui.ssao.blurRadius);
+			vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, 6, 1, 0, 0);
+			vkCmdEndRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer);
+		}
+
+		// forward + deferred composition
 		std::array<VkClearValue, 2> clearValues{ {
 			VkClearValue{
 				.color = { {0.0f, 0.0f, 0.0f, 1.0f} }
@@ -561,7 +720,7 @@ void Engine::drawFrame() {
 		VkRenderPassBeginInfo renderPassInfo{
 			.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
 			.pNext = nullptr,
-			.renderPass = this->renderPass,
+			.renderPass = this->outputRenderPass,
 			.framebuffer = this->framebuffers[imageIndex],
 			.renderArea = {
 				.offset = {0, 0},
@@ -572,7 +731,7 @@ void Engine::drawFrame() {
 		};
 
 		vkCmdBeginRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-
+		
 		if (this->pScene72->environment) {
 			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->skyboxPipeline);
 			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneViewport);
@@ -584,10 +743,10 @@ void Engine::drawFrame() {
 
 		instanceCount = 0;
 		if (!simpleInstances.empty()) {
-			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->simplePipeline);
+			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->simpleForwardPipeline);
 			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneViewport);
 			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneScissor);
-			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->simplePipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
+			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->simpleForwardPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
 			for (const auto& instanceToDraw : simpleInstances) {
 				if (this->cullingMode == CullingMode::NONE ||
 					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(debugProjection, debugView, instanceToDraw.transform)
@@ -595,18 +754,18 @@ void Engine::drawFrame() {
 					VkDeviceSize vertexBufferOffsets = 0;
 					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
 					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
-					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->simplePipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->simpleForwardPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
 					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
 				}
 				instanceCount++;
 			}
 		}
 		if (!mirrorInstances.empty()) {
-			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorPipeline);
+			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorForwardPipeline);
 			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneViewport);
 			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneScissor);
-			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
-			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorPipelineLayout, 3, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].skyboxUniformDescriptorSet, 0, nullptr);
+			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorForwardPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
+			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorForwardPipelineLayout, 3, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].skyboxUniformDescriptorSet, 0, nullptr);
 			for (const auto& instanceToDraw : mirrorInstances) {
 				if (this->cullingMode == CullingMode::NONE ||
 					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(debugProjection, debugView, instanceToDraw.transform)
@@ -614,19 +773,19 @@ void Engine::drawFrame() {
 					VkDeviceSize vertexBufferOffsets = 0;
 					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
 					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
-					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
-					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorPipelineLayout, 2, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].materialLevelUniformDescriptorSets[instanceToDraw.mesh->material.lock()->idx], 0, nullptr);
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorForwardPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->mirrorForwardPipelineLayout, 2, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].materialLevelUniformDescriptorSets[instanceToDraw.mesh->material.lock()->idx], 0, nullptr);
 					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
 				}
 				instanceCount++;
 			}
 		}
 		if (!environmentInstances.empty()) {
-			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentPipeline);
+			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentForwardPipeline);
 			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneViewport);
 			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneScissor);
-			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
-			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentPipelineLayout, 3, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].skyboxUniformDescriptorSet, 0, nullptr);
+			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentForwardPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
+			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentForwardPipelineLayout, 3, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].skyboxUniformDescriptorSet, 0, nullptr);
 			for (const auto& instanceToDraw : environmentInstances) {
 				if (this->cullingMode == CullingMode::NONE ||
 					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(debugProjection, debugView, instanceToDraw.transform)
@@ -634,19 +793,19 @@ void Engine::drawFrame() {
 					VkDeviceSize vertexBufferOffsets = 0;
 					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
 					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
-					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
-					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentPipelineLayout, 2, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].materialLevelUniformDescriptorSets[instanceToDraw.mesh->material.lock()->idx], 0, nullptr);
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentForwardPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->environmentForwardPipelineLayout, 2, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].materialLevelUniformDescriptorSets[instanceToDraw.mesh->material.lock()->idx], 0, nullptr);
 					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
 				}
 				instanceCount++;
 			}
 		}
 		if (!lambertianInstances.empty()) {
-			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianPipeline);
+			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianForwardPipeline);
 			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneViewport);
 			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneScissor);
-			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
-			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianPipelineLayout, 3, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].skyboxUniformDescriptorSet, 0, nullptr);
+			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianForwardPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformDescriptorSet, 0, nullptr);
+			vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianForwardPipelineLayout, 3, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].skyboxUniformDescriptorSet, 0, nullptr);
 			for (const auto& instanceToDraw : lambertianInstances) {
 				if (this->cullingMode == CullingMode::NONE ||
 					this->cullingMode == CullingMode::FRUSTUM && instanceToDraw.mesh->bbox.insideFrustum(debugProjection, debugView, instanceToDraw.transform)
@@ -654,14 +813,14 @@ void Engine::drawFrame() {
 					VkDeviceSize vertexBufferOffsets = 0;
 					vkCmdBindVertexBuffers(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &instanceToDraw.mesh->vertexBuffer, &vertexBufferOffsets);
 					std::uint32_t dynamicOffset = static_cast<std::uint32_t>(dynamicBufferOffset * instanceCount);
-					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
-					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianPipelineLayout, 2, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].materialLevelUniformDescriptorSets[instanceToDraw.mesh->material.lock()->idx], 0, nullptr);
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianForwardPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].objectLevelUniformDescriptorSet, 1, &dynamicOffset);
+					vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->lambertianForwardPipelineLayout, 2, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].materialLevelUniformDescriptorSets[instanceToDraw.mesh->material.lock()->idx], 0, nullptr);
 					vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, instanceToDraw.mesh->count, 1, 0, 0);
 				}
 				instanceCount++;
 			}
 		}
-		if (!pbrInstances.empty()) {
+		/*if (!pbrInstances.empty()) {
 			vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pbrPipeline);
 			vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneViewport);
 			vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneScissor);
@@ -680,10 +839,32 @@ void Engine::drawFrame() {
 				}
 				instanceCount++;
 			}
+		}*/
+		vkCmdBindPipeline(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->deferredShadingCompositionPipeline);
+		vkCmdSetViewport(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneViewport);
+		vkCmdSetScissor(this->frameData[this->currentFrame].graphicsCommandBuffer, 0, 1, &sceneScissor);
+		vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->deferredShadingCompositionPipelineLayout, 0, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].viewLevelUniformWithSSAODescriptorSet, 0, nullptr);
+		vkCmdBindDescriptorSets(this->frameData[this->currentFrame].graphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->deferredShadingCompositionPipelineLayout, 1, 1, &this->pScene72->frameDescriptorSets[this->currentFrame].skyboxUniformDescriptorSet, 0, nullptr);
+		struct {
+			int renderingMode;
+			int enableSSAO;
+		} pushConstants{};
+		pushConstants.renderingMode = static_cast<int>(ui.deferredShading.renderingMode);
+		pushConstants.enableSSAO = ui.ssao.enable;
+		vkCmdPushConstants(this->frameData[this->currentFrame].graphicsCommandBuffer, this->deferredShadingCompositionPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants);
+		vkCmdDraw(this->frameData[this->currentFrame].graphicsCommandBuffer, 6, 1, 0, 0);
+
+		// Render UI
+		if (!this->offscreen) {
+			ImGui::Render();
+			ImDrawData* imDrawData = ImGui::GetDrawData();
+			ImGui_ImplVulkan_RenderDrawData(imDrawData, this->frameData[this->currentFrame].graphicsCommandBuffer);
 		}
+
 		// Finish
 		vkCmdEndRenderPass(this->frameData[this->currentFrame].graphicsCommandBuffer);
 
+		
 		JJYOU_VK_UTILS_CHECK(vkEndCommandBuffer(this->frameData[this->currentFrame].graphicsCommandBuffer));
 	}
 
@@ -886,9 +1067,141 @@ void Engine::handleFramebufferResizing(void) {
 	vkDestroyImage(*this->context.device(), this->depthImage, nullptr);
 	this->allocator.free(this->depthImageMemory);
 
+
 	this->createSwapchain();
 	this->createDepthImage();
 	this->createFramebuffers();
+	this->gBuffer.createTextures(
+		vk::Extent2D(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)),
+		this->deferredRenderPass
+	);
+	this->ssao.createTextures(
+		vk::Extent2D(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)),
+		this->ssaoRenderPass,
+		this->ssaoRenderPass
+	);
+
+	// Update descriptor sets
+	if (this->pScene72) {
+		this->updateGBufferAndSSAOSampler(*this->pScene72);
+	}
+}
+
+void Engine::updateGBufferAndSSAOSampler(const s72::Scene72& scene) const {
+	for (std::uint32_t i = 0; i < Engine::MAX_FRAMES_IN_FLIGHT; ++i) {
+		VkDescriptorImageInfo imageBindInfo6{
+				.sampler = *this->gBuffer.nearestSampler(),
+				.imageView = *this->gBuffer.imageView(0),
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		};
+		VkDescriptorImageInfo imageBindInfo7{
+				.sampler = *this->gBuffer.nearestSampler(),
+				.imageView = *this->gBuffer.imageView(1),
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		};
+		VkDescriptorImageInfo imageBindInfo8{
+				.sampler = *this->gBuffer.nearestSampler(),
+				.imageView = *this->gBuffer.imageView(2),
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		};
+		VkDescriptorImageInfo imageBindInfo9{
+				.sampler = *this->gBuffer.nearestSampler(),
+				.imageView = *this->gBuffer.imageView(3),
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		};
+		VkDescriptorImageInfo imageBindInfo10{
+				.sampler = *this->ssao.sampler(),
+				.imageView = *this->ssao.imageView(0),
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		};
+		VkDescriptorImageInfo imageBindInfo11{
+				.sampler = *this->ssao.sampler(),
+				.imageView = *this->ssao.imageView(1),
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		};
+		std::vector<VkWriteDescriptorSet> writeDescriptorSets{};
+		VkWriteDescriptorSet descriptorWrite{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.pNext = nullptr,
+				.dstSet = scene.frameDescriptorSets[i].viewLevelUniformWithSSAODescriptorSet,
+				//.dstBinding = ,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				//.pImageInfo = ,
+				.pBufferInfo = nullptr,
+				.pTexelBufferView = nullptr
+		};
+		descriptorWrite.dstBinding = 6; descriptorWrite.pImageInfo = &imageBindInfo6; writeDescriptorSets.push_back(descriptorWrite);
+		descriptorWrite.dstBinding = 7; descriptorWrite.pImageInfo = &imageBindInfo7; writeDescriptorSets.push_back(descriptorWrite);
+		descriptorWrite.dstBinding = 8; descriptorWrite.pImageInfo = &imageBindInfo8; writeDescriptorSets.push_back(descriptorWrite);
+		descriptorWrite.dstBinding = 9; descriptorWrite.pImageInfo = &imageBindInfo9; writeDescriptorSets.push_back(descriptorWrite);
+		descriptorWrite.dstBinding = 10; descriptorWrite.pImageInfo = &imageBindInfo10; writeDescriptorSets.push_back(descriptorWrite);
+		descriptorWrite.dstBinding = 11; descriptorWrite.pImageInfo = &imageBindInfo11; writeDescriptorSets.push_back(descriptorWrite);
+		vkUpdateDescriptorSets(*this->context.device(), static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, nullptr);
+	}
+	{
+		VkDescriptorImageInfo imageBindInfo1{
+				.sampler = *this->gBuffer.linearSampler(),
+				.imageView = *this->gBuffer.imageView(0),
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		};
+		VkDescriptorImageInfo imageBindInfo2{
+				.sampler = *this->gBuffer.linearSampler(),
+				.imageView = *this->gBuffer.imageView(1),
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		};
+		VkDescriptorImageInfo imageBindInfo3{
+				.sampler = *this->gBuffer.linearSampler(),
+				.imageView = *this->gBuffer.imageView(2),
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		};
+		VkDescriptorImageInfo imageBindInfo4{
+				.sampler = *this->gBuffer.linearSampler(),
+				.imageView = *this->gBuffer.imageView(3),
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		};
+		std::vector<VkWriteDescriptorSet> writeDescriptorSets{};
+		VkWriteDescriptorSet descriptorWrite{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.pNext = nullptr,
+				.dstSet = *scene.ssaoDescriptorSet,
+				//.dstBinding = ,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				//.pImageInfo = ,
+				.pBufferInfo = nullptr,
+				.pTexelBufferView = nullptr
+		};
+		descriptorWrite.dstBinding = 2; descriptorWrite.pImageInfo = &imageBindInfo1; writeDescriptorSets.push_back(descriptorWrite);
+		descriptorWrite.dstBinding = 3; descriptorWrite.pImageInfo = &imageBindInfo2; writeDescriptorSets.push_back(descriptorWrite);
+		descriptorWrite.dstBinding = 4; descriptorWrite.pImageInfo = &imageBindInfo3; writeDescriptorSets.push_back(descriptorWrite);
+		descriptorWrite.dstBinding = 5; descriptorWrite.pImageInfo = &imageBindInfo4; writeDescriptorSets.push_back(descriptorWrite);
+		vkUpdateDescriptorSets(*this->context.device(), static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, nullptr);
+	}
+	{
+		VkDescriptorImageInfo imageBindInfo0{
+				.sampler = *this->ssao.sampler(),
+				.imageView = *this->ssao.imageView(0),
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		};
+		std::vector<VkWriteDescriptorSet> writeDescriptorSets{};
+		VkWriteDescriptorSet descriptorWrite{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.pNext = nullptr,
+				.dstSet = *scene.ssaoBlurDescriptorSet,
+				//.dstBinding = ,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				//.pImageInfo = ,
+				.pBufferInfo = nullptr,
+				.pTexelBufferView = nullptr
+		};
+		descriptorWrite.dstBinding = 0; descriptorWrite.pImageInfo = &imageBindInfo0; writeDescriptorSets.push_back(descriptorWrite);
+		vkUpdateDescriptorSets(*this->context.device(), static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, nullptr);
+	}
 }
 
 void Engine::setScene(s72::Scene72::Ptr pScene72) {

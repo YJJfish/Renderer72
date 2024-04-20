@@ -1,4 +1,5 @@
 #include "VirtualSwapchain.hpp"
+#include "utils.hpp"
 
 VirtualSwapchain::VirtualSwapchain(
 	const jjyou::vk::Context& context,

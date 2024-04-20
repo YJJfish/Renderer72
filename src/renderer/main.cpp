@@ -13,6 +13,7 @@
 
 #include <stb/stb_image.h>
 int main(int argc, char* argv[]) {
+	std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
 	try {
 		// Parse arguments.
 		TinyArgParser argParser;
@@ -130,10 +131,14 @@ int main(int argc, char* argv[]) {
 			}
 		}
 		engine.destroy(*pScene72);
+		pScene72 = nullptr;
 	}
 	catch (const std::exception& e) {
 		std::cerr << "Exception: " << e.what() << std::endl;
 		return -1;
 	}
+	std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+	std::int64_t ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+	std::cout << "Program run for " << ms << "ms" << std::endl;
 	return 0;
 }

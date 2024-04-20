@@ -1,3 +1,9 @@
 [submodule "dep/jjyouLib"]
 	path = dep/jjyouLib
 	url = git@github.com:YJJfish/jjyouLib.git
+[submodule "dep/imgui"]
+	path = dep/imgui
+	url = https://github.com/ocornut/imgui.git
+[submodule "dep/stb"]
+	path = dep/stb
+	url = https://github.com/nothings/stb.git

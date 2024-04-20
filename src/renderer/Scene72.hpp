@@ -12,6 +12,8 @@
 
 #include <vulkan/vulkan.h>
 #include <jjyou/vk/Vulkan.hpp>
+#include "Texture.hpp"
+#include "utils.hpp"
 #include <jjyou/glsl/glsl.hpp>
 #include "Engine.hpp"
 #include "Culling.hpp"
@@ -441,6 +443,7 @@ namespace s72 {
 		// Shader descriptors and uniforms
 		struct FrameDescriptorSets {
 			VkDescriptorSet viewLevelUniformDescriptorSet = nullptr;
+			VkDescriptorSet viewLevelUniformWithSSAODescriptorSet = nullptr;
 			VkBuffer viewLevelUniformBuffer = nullptr;
 			jjyou::vk::Memory viewLevelUniformBufferMemory{};
 			vk::raii::Buffer lightsBuffer{ nullptr };
@@ -455,13 +458,19 @@ namespace s72 {
 			VkBuffer skyboxUniformBuffer = nullptr;
 			jjyou::vk::Memory skyboxUniformBufferMemory{};
 			VkDescriptorSet skyboxUniformDescriptorSet = nullptr;
+
 		};
 		std::array<FrameDescriptorSets, Engine::MAX_FRAMES_IN_FLIGHT> frameDescriptorSets{};
+		
+		vk::raii::DescriptorSet ssaoDescriptorSet{ nullptr };
+		vk::raii::DescriptorSet ssaoBlurDescriptorSet{ nullptr };
+		VkBuffer ssaoSampleUniformBuffer = nullptr;
+		jjyou::vk::Memory ssaoSampleUniformBufferMemory{};
+
 		std::vector<ShadowMap> sunLightShadowMaps{};
 		std::vector<ShadowMap> sphereLightShadowMaps{};
 		vk::raii::Sampler shadowMapSampler{ nullptr };
 		std::vector<ShadowMap> spotLightShadowMaps{};
-		VkDescriptorPool descriptorPool = nullptr;
 		
 
 	private:
