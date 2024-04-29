@@ -1,6 +1,8 @@
 # Renderer72
 A real-time renderer based on Vulkan.
 
+***This page contains many GIFs so it may take some time to load them.***
+
 ### v1.0
 
 Scene loader & Simple material & Animation:
@@ -41,6 +43,21 @@ A scene with only a quad (All the "geometry" is achieved with normal mapping and
 
 [![v2.0 Model](https://img.youtube.com/vi/0MdJOjzism4/0.jpg)](https://www.youtube.com/watch?v=0MdJOjzism4)
 
-### v3.0 (Under development)
+### v3.0
 
-Analytical lighting & Shadow mapping
+Spot light & Perspective shadow mapping:
+
+![v3.0-spot-light](./images/v3.0-spot-light.gif)
+
+Sphere light & Omnidirectional shadow mapping:
+
+![v3.0-sphere-light](./images/v3.0-sphere-light.gif)
+
+Directional light & Cascade shadow mapping:
+
+![v3.0-sun-light](./images/v3.0-sun-light.gif)
+
+Visualization of cascade levels:
+
+![v3.0-cascade-visualization](./images/v3.0-cascade-visualization.gif)
+
